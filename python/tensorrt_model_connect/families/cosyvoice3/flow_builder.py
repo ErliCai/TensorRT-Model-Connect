@@ -17,6 +17,9 @@ from .checkpoint_mapper import validate_weights
 from .config import FlowConfig, ShapeProfile
 from .constants import time_frequencies
 
+# Number of reduction blocks for every FP32 linear layer; see _Graph.linear.
+LINEAR_K_BLOCKS = 4
+
 
 class _Graph:
     def __init__(self, network, weights, cfg, profile, *, debug_outputs=False):
@@ -94,11 +97,29 @@ class _Graph:
         return layer.get_output(0)
 
     def linear(self, x, key):
+        """x @ W^T + b with the reduction dimension accumulated in blocks.
+
+        TensorRT's FP32 GEMM tactics differ in accumulation order. Kernels
+        that accumulate the whole reduction sequentially carry about twice
+        the rounding error of the sliced kernels cuBLAS uses for the PyTorch
+        reference, and the choice varies between builds. Summing LINEAR_K_BLOCKS
+        partial products pairwise bounds the error independent of the tactic
+        selected; measured against an FP64 oracle it matches the reference.
+        """
         w, b = self.weights[key + ".weight"], self.weights[key + ".bias"]
         rank = len(x.shape)
-        rhs = self.const(w.T, (1,) * (rank - 2) + w.T.shape)
-        out = self.net.add_matrix_multiply(x, self.trt.MatrixOperation.NONE, rhs, self.trt.MatrixOperation.NONE).get_output(0)
-        return self.ew(out, self.const(b, (1,) * (rank - 1) + b.shape))
+        n, k = w.shape
+        blocks = LINEAR_K_BLOCKS if k % LINEAR_K_BLOCKS == 0 else 1
+        step = k // blocks
+        parts = []
+        for i in range(blocks):
+            part = x if blocks == 1 else self.slice_last(x, i * step, step)
+            rhs = self.const(w.T[i * step:(i + 1) * step], (1,) * (rank - 2) + (step, n))
+            parts.append(self.net.add_matrix_multiply(part, self.trt.MatrixOperation.NONE, rhs,
+                                                      self.trt.MatrixOperation.NONE).get_output(0))
+        while len(parts) > 1:
+            parts = [self.ew(parts[i], parts[i + 1]) if i + 1 < len(parts) else parts[i] for i in range(0, len(parts), 2)]
+        return self.ew(parts[0], self.const(b, (1,) * (rank - 1) + b.shape))
 
     def norm(self, x):
         axes = 1 << (len(x.shape) - 1)
@@ -152,9 +173,14 @@ class _Graph:
         k = self.rotary(self.linear(x, key + ".to_k"), cos, sin)
         v = self.linear(x, key + ".to_v")
         q, k, v = [self.transpose(self.reshape(y, (2, -1, cfg.heads, cfg.head_dim)), (0, 2, 1, 3)) for y in (q, k, v)]
-        # The reference SDPA export applies sqrt(scale) to Q and K before
-        # matmul. Preserve this floating-point operation order.
-        q, k = self.scale(q, cfg.head_dim ** -0.25), self.scale(k, cfg.head_dim ** -0.25)
+        # The runtime reference (PyTorch FP32 SDPA selects the memory-efficient
+        # kernel) applies head_dim**-0.5 to the unrounded QK^T products. Only
+        # the ONNX export's math decomposition pre-scales Q and K by
+        # head_dim**-0.25, rounding both operands before the matmul; matching
+        # that export doubled the logit rounding error against an FP64 oracle.
+        # For head_dim=64 the scale 1/8 is a power of two, so scaling Q alone
+        # is exact and equals scaling the products.
+        q = self.scale(q, cfg.head_dim ** -0.5)
         scores = self.net.add_matrix_multiply(q, self.trt.MatrixOperation.NONE, k, self.trt.MatrixOperation.TRANSPOSE).get_output(0)
         bool_mask = self.net.add_cast(self.reshape(mask, (2, 1, 1, -1)), self.trt.bool).get_output(0)
         scores = self.net.add_select(bool_mask, scores, self.scalar(float("-inf"), 4)).get_output(0)
