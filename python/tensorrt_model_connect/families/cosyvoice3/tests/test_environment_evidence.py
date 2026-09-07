@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tensorrt_model_connect.families.cosyvoice3.validate_flow_environment import validate_case_manifest
+from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_environment import validate_case_manifest
 
 
 def cases():
@@ -31,7 +31,19 @@ def test_incomplete_capture_cannot_pass(kind):
         validate_case_manifest(values, has_acoustic=kind == "unrecorded_acoustic")
 
 
-@pytest.mark.parametrize("module", ["validate_flow_environment", "audit_acoustic_reference", "audit_flow_fp64", "validate_offline_flow"])
+@pytest.mark.parametrize("module", [
+    "validation.validate_flow",
+    "validation.validate_flow_pytorch",
+    "validation.validate_flow_trajectory",
+    "validation.validate_offline_flow",
+    "validation.validate_flow_environment",
+    "validation.audit_flow_fp64",
+    "diagnostics.audit_flow_reference",
+    "diagnostics.audit_acoustic_reference",
+    "diagnostics.diagnose_flow_layers",
+    "diagnostics.diagnose_flow_ops",
+    "diagnostics.diagnose_attention_precision",
+])
 def test_help_without_gpu_dependencies(module):
     result = subprocess.run([sys.executable, "-m", "tensorrt_model_connect.families.cosyvoice3." + module, "--help"],
                             check=True, capture_output=True, text=True)

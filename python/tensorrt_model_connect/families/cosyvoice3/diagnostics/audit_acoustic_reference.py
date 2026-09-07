@@ -14,11 +14,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .config import FLOW_SHA256
-from .flow_runtime import INPUT_NAMES
-from .parity_metrics import compare_outputs
-from .validate_flow_pytorch import ATOL, RTOL, _ieee_fp32_reference, _official_dit
+from ..artifacts import sha256_file
+from ..config import FLOW_SHA256
+from ..flow_runtime import INPUT_NAMES
+from ..validation.parity_metrics import compare_outputs
+from ..validation.validate_flow_pytorch import ATOL, RTOL, _ieee_fp32_reference, _official_dit
 
 
 def main(argv=None):

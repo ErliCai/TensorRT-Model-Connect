@@ -19,10 +19,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .config import FLOW_SHA256
-from .flow_matching import solve_euler
-from .flow_runtime import FlowEngine, INPUT_NAMES
+from ..artifacts import sha256_file
+from ..config import FLOW_SHA256
+from ..flow import solve_euler
+from ..flow_runtime import FlowEngine, INPUT_NAMES
 from .parity_metrics import compare_outputs
 from .validate_flow_pytorch import ATOL, INTEGRATED_ATOL, INTEGRATED_RTOL, RTOL, _official_dit, _ieee_fp32_reference
 
@@ -80,7 +80,7 @@ def main(argv=None):
     DiT, revision = _official_dit(args.cosyvoice_source)
     ConditionalCFM, matcha_revision = _official_solver(args.cosyvoice_source)
     args.output.mkdir(parents=True, exist_ok=False)
-    solver_source_sha256 = sha256_file(Path(__file__).with_name("flow_matching.py"))
+    solver_source_sha256 = sha256_file(Path(__file__).parents[1] / "flow.py")
     model = DiT(dim=1024, depth=22, heads=16, dim_head=64, ff_mult=2,
                 mel_dim=80, mu_dim=80, spk_dim=80, out_channels=80,
                 static_chunk_size=50, num_decoding_left_chunks=-1).eval()

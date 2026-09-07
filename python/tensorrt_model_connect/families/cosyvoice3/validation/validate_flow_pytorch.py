@@ -21,9 +21,9 @@ import sys
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .config import FLOW_SHA256, MODEL_ID, MODEL_REVISION, SOURCE_REVISION
-from .flow_runtime import FlowEngine, INPUT_NAMES
+from ..artifacts import sha256_file
+from ..config import FLOW_SHA256, MODEL_ID, MODEL_REVISION, SOURCE_REVISION
+from ..flow_runtime import FlowEngine, INPUT_NAMES
 from .parity_metrics import compare_outputs
 
 # Elementwise gates for one estimator call, calibrated on 2026-09-08 against

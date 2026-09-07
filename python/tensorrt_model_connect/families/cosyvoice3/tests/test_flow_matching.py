@@ -3,7 +3,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from tensorrt_model_connect.families.cosyvoice3.flow_matching import solve_euler
+from tensorrt_model_connect.families.cosyvoice3.flow import solve_euler  # noqa: E402
 
 
 def inputs():

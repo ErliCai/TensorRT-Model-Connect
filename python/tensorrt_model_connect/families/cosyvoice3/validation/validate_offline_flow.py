@@ -18,18 +18,18 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .conditioning import ConditioningEngine, weight_shapes
-from .config import FLOW_SHA256, ShapeProfile
-from .flow_matching import solve_euler
-from .flow_runtime import FlowEngine, INPUT_NAMES
-from .offline_flow import OfflineFlow
+from ..artifacts import sha256_file
+from ..conditioning import ConditioningEngine, weight_shapes
+from ..config import FLOW_SHA256, ShapeProfile
+from ..flow import OfflineFlow, solve_euler
+from ..flow_runtime import FlowEngine, INPUT_NAMES
 from .parity_metrics import compare_outputs
 from .validate_flow_pytorch import ATOL, INTEGRATED_ATOL, INTEGRATED_RTOL, RTOL, _official_dit, _ieee_fp32_reference
 
+from .validate_flow_trajectory import _official_solver
+
 # Ten-step integrated mel outputs; every other stage compares one operation.
 INTEGRATED_STAGES = ("flow_with_official_conditions", "native_tokens_to_target_mel")
-from .validate_flow_trajectory import _official_solver
 
 
 def acoustic_cases(tokens, features, speaker):
@@ -99,8 +99,8 @@ def main(argv=None):
     flow_profile = ShapeProfile(**manifest["profile"])
     for frames in (16, 64, 128, 256):
         flow_profile.validate_frames(frames)
-    implementation_files = [Path(__file__).with_name(name) for name in
-                            ("validate_offline_flow.py", "conditioning.py", "offline_flow.py", "flow_matching.py")]
+    implementation_files = [Path(__file__), Path(__file__).parents[1] / "conditioning.py",
+                            Path(__file__).parents[1] / "flow.py", Path(__file__).parents[1] / "artifacts.py"]
     implementation_hashes = {path.name: sha256_file(path) for path in implementation_files}
     if sha256_file(args.model_dir / "flow.pt") != FLOW_SHA256:
         raise ValueError("Checkpoint does not match pinned model")
@@ -154,7 +154,8 @@ def main(argv=None):
         for case in cases:
             request = {k: case[k] for k in ("tokens", "prompt_tokens", "prompt_features", "speaker")}
             values = cuda(request)
-            length = lambda n: torch.tensor([n], device="cuda", dtype=torch.int32)
+            def length(n):
+                return torch.tensor([n], device="cuda", dtype=torch.int32)
             prep.inference(values["tokens"], length(values["tokens"].shape[1]), values["prompt_tokens"],
                            length(values["prompt_tokens"].shape[1]), values["prompt_features"],
                            length(values["prompt_features"].shape[1]), values["speaker"], False, True)

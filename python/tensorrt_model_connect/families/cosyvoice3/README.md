@@ -5,6 +5,37 @@ This directory starts the implementation of
 CosyVoice3 support to `trtmc build` / `trtmc infer`.** There is intentionally
 no exported `plugin`, runtime strategy, or E2E manifest claiming otherwise.
 
+## Directory layout
+
+```text
+cosyvoice3/
+  __main__.py          # inspect / build-* / synthesize CLI
+  tts.py               # text -> speech tokens -> Mel -> waveform
+  llm.py, hift.py      # native LLM and vocoder graphs/runtimes
+  flow.py              # Euler solver and offline token-to-Mel composition
+  conditioning.py      # token and speaker conditioning
+  flow_builder.py, flow_runtime.py
+  components.py        # family-local TensorRT graph/runtime mechanics
+  artifacts.py         # hashing and atomic component publication
+  config.py, constants.py, checkpoint_mapper.py
+  validation/          # maintained numerical gates and FP64 calibration
+  diagnostics/         # development-only failure localization tools
+  tests/               # pytest contracts and opt-in GPU comparisons
+```
+
+Runtime modules do not import validation or diagnostics. Diagnostic tools are
+retained for reproducibility, not required for inference; their inclusion in a
+future upstream PR is a separate decision.
+
+Migration: replace `cosyvoice3.validate_*` with
+`cosyvoice3.validation.validate_*`, and `cosyvoice3.audit_flow_fp64` with
+`cosyvoice3.validation.audit_flow_fp64`. Other `audit_*` and `diagnose_*`
+commands now live under `cosyvoice3.diagnostics`. The old module paths have
+no forwarding stubs. Import `solve_euler` and `OfflineFlow` from `cosyvoice3.flow`.
+Existing `build-*`, `inspect`, and `synthesize` commands and plan formats
+are unchanged. New builds record `artifacts.py` in implementation hashes;
+old manifests and evidence must not be rewritten.
+
 Implemented:
 
 - Safe, data-only parsing of `cosyvoice3.yaml`, without executing HyperPyYAML
@@ -208,7 +239,7 @@ trajectory 96/96 (worst 0.48 of the gate), real-audio suite 136/136 (worst
 0.44); the GPU test suite passes with the official source enabled.
 
 ```bash
-python -m tensorrt_model_connect.families.cosyvoice3.audit_flow_fp64 \
+python -m tensorrt_model_connect.families.cosyvoice3.validation.audit_flow_fp64 \
   --component /path/to/new-cosyvoice3-flow-component \
   --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 \
   --cosyvoice-source /path/to/CosyVoice-at-pinned-revision \
@@ -242,12 +273,12 @@ python -m tensorrt_model_connect.families.cosyvoice3 build-flow \
   --output /path/to/new-cosyvoice3-flow-component \
   --min-frames 4 --opt-frames 32 --max-frames 128 --workspace-mib 256
 
-python -m tensorrt_model_connect.families.cosyvoice3.validate_flow \
+python -m tensorrt_model_connect.families.cosyvoice3.validation.validate_flow \
   --component /path/to/new-cosyvoice3-flow-component \
   --oracle-onnx /path/to/Fun-CosyVoice3-0.5B-2512/flow.decoder.estimator.fp32.onnx \
   --frames 4 17 64 128 --report /path/to/new-flow-parity.json
 
-python -m tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch \
+python -m tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch \
   --component /path/to/new-cosyvoice3-flow-component \
   --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 \
   --cosyvoice-source /path/to/CosyVoice-at-pinned-revision \
@@ -346,7 +377,7 @@ Detailed Chinese diagrams, dependencies, commands and results:
 ## Native offline conditioning and real-audio reconstruction evidence
 
 `conditioning.py` owns seven published weight tensors and a separate native
-TensorRT graph. `offline_flow.py` composes it with the DiT estimator, preserving
+TensorRT graph. `flow.py` composes it with the DiT estimator, preserving
 prompt-first token ordering, two mel frames per speech token, conditional-only
 prompt features, and target-only output cropping. The caller supplies noise;
 this API does not generate text tokens or promise upstream automatic noise
@@ -362,7 +393,7 @@ python -m tensorrt_model_connect.families.cosyvoice3 build-flow \
   --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 \
   --output /path/to/new-flow-256 --max-frames 256
 
-python -m tensorrt_model_connect.families.cosyvoice3.validate_offline_flow \
+python -m tensorrt_model_connect.families.cosyvoice3.validation.validate_offline_flow \
   --component /path/to/new-flow-256 --conditioner /path/to/new-conditioner \
   --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 \
   --cosyvoice-source /path/to/CosyVoice-at-pinned-revision \

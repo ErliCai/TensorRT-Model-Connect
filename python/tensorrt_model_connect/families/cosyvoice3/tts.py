@@ -70,11 +70,11 @@ def synthesize(args):
     """Unload each stage before the next, so this development path fits an 8 GB GPU."""
     import torch
     import soundfile as sf
-    from .__main__ import sha256_file
+    from .artifacts import sha256_file
     from .conditioning import ConditioningEngine
     from .flow_runtime import FlowEngine
     from .hift import HiFTEngine
-    from .offline_flow import OfflineFlow
+    from .flow import OfflineFlow
 
     output = args.output.resolve()
     if output.exists():

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dependency-light tests for pinned-source reference selection."""
 
-from pathlib import Path
 import subprocess
 import sys
 
@@ -9,7 +8,7 @@ import pytest
 import numpy as np
 
 from tensorrt_model_connect.families.cosyvoice3.config import SOURCE_REVISION
-from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import (
+from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import (
     _ieee_fp32_reference,
     _official_dit,
     _cases,
@@ -18,7 +17,7 @@ from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import (
     INTEGRATED_RTOL,
     RTOL,
 )
-from tensorrt_model_connect.families.cosyvoice3.parity_metrics import compare_outputs
+from tensorrt_model_connect.families.cosyvoice3.validation.parity_metrics import compare_outputs
 
 
 def test_rejects_wrong_source_revision(tmp_path, monkeypatch):
@@ -31,7 +30,7 @@ def test_rejects_wrong_source_revision(tmp_path, monkeypatch):
 
 def test_validator_help_is_dependency_light():
     result = subprocess.run(
-        [sys.executable, "-m", "tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch", "--help"],
+        [sys.executable, "-m", "tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch", "--help"],
         check=True, capture_output=True, text=True,
     )
     assert "pinned official CosyVoice PyTorch DiT" in result.stdout
@@ -84,14 +83,14 @@ def test_parity_reports_elementwise_failures_without_weakening_gate():
 
 def test_trajectory_validator_help_is_dependency_light():
     result = subprocess.run(
-        [sys.executable, "-m", "tensorrt_model_connect.families.cosyvoice3.validate_flow_trajectory", "--help"],
+        [sys.executable, "-m", "tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_trajectory", "--help"],
         check=True, capture_output=True, text=True,
     )
     assert "unmodified official solver" in result.stdout
 
 
 def test_supplemental_conditions_are_reproducible_and_labelled_separately():
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_trajectory import _cfg_cases
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_trajectory import _cfg_cases
     cases = list(_cfg_cases())
     assert len(cases) == 8
     for (frames, masked, values), (_, _, repeated) in zip(cases, _cfg_cases()):

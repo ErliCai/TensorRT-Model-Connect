@@ -7,19 +7,10 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
-import os
 from pathlib import Path
-import tempfile
 
+from .artifacts import sha256_file, write_component
 from .config import MODEL_ID, MODEL_REVISION, SOURCE_REVISION, ShapeProfile, read_config
-
-
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def build(args):
@@ -33,7 +24,7 @@ def build(args):
     cfg = read_config(args.model_dir)
     profile = ShapeProfile(args.min_frames, args.opt_frames, args.max_frames)
     implementation_files = [Path(__file__).with_name(name) for name in
-                            ("__main__.py", "flow_builder.py", "constants.py", "config.py", "checkpoint_mapper.py")]
+                            ("__main__.py", "artifacts.py", "flow_builder.py", "constants.py", "config.py", "checkpoint_mapper.py")]
     implementation_hashes = {path.name: sha256_file(path) for path in implementation_files}
     weights = load_flow_weights(args.model_dir, cfg)
     plan = build_flow_engine(weights, cfg, profile, workspace_mib=args.workspace_mib)
@@ -53,17 +44,7 @@ def build(args):
         "implementation_sha256": implementation_hashes,
         "workspace_mib": args.workspace_mib,
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".cosyvoice3-", dir=output.parent) as tmp:
-        stage = Path(tmp) / "component"
-        stage.mkdir()
-        (stage / "flow.plan").write_bytes(plan)
-        (stage / "manifest.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-        # Output publication occurs only after both complete files are written.
-        # Never update the user's checkpoint or an existing component directory.
-        if output.exists():
-            raise FileExistsError(output)
-        os.rename(stage, output)
+    write_component(output, "flow.plan", plan, metadata)
     print(json.dumps(metadata, indent=2))
 
 
@@ -131,7 +112,7 @@ def build_conditioner(args):
         raise FileExistsError(output)
     read_config(args.model_dir)
     profile = TokenProfile(args.min_tokens, args.opt_tokens, args.max_tokens)
-    files = [Path(__file__).with_name(name) for name in ("__main__.py", "conditioning.py", "config.py")]
+    files = [Path(__file__).with_name(name) for name in ("__main__.py", "artifacts.py", "conditioning.py", "config.py")]
     sources = {path.name: sha256_file(path) for path in files}
     plan = build_engine(load_weights(args.model_dir), profile, workspace_mib=args.workspace_mib)
     if sources != {path.name: sha256_file(path) for path in files}:
@@ -148,15 +129,7 @@ def build_conditioner(args):
         "source_sha256": {name: sha256_file(args.model_dir / name) for name in ("cosyvoice3.yaml", "flow.pt")},
         "implementation_sha256": sources,
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".cosyvoice3-conditioning-", dir=output.parent) as tmp:
-        stage = Path(tmp) / "component"
-        stage.mkdir()
-        (stage / "conditioning.plan").write_bytes(plan)
-        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        if output.exists():
-            raise FileExistsError(output)
-        os.rename(stage, output)
+    write_component(output, "conditioning.plan", plan, manifest)
     print(json.dumps(manifest, indent=2))
 
 
@@ -168,7 +141,7 @@ def build_speech_component(args):
     if output.exists():
         raise FileExistsError(output)
     files = [Path(__file__).with_name(name) for name in
-             ("__main__.py", "components.py", f"{component}.py", "config.py")]
+             ("__main__.py", "artifacts.py", "components.py", f"{component}.py", "config.py")]
     sources = {path.name: sha256_file(path) for path in files}
     metadata = {}
     if component == "llm":
@@ -198,15 +171,7 @@ def build_speech_component(args):
                     tensorrt_version=trt_compat.module_version(), workspace_mib=args.workspace_mib,
                     plan_sha256=hashlib.sha256(plan).hexdigest(), implementation_sha256=sources,
                     source_sha256={name: sha256_file(args.model_dir / name) for name in checkpoint_files})
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f".cosyvoice3-{component}-", dir=output.parent) as tmp:
-        stage = Path(tmp) / "component"
-        stage.mkdir()
-        (stage / f"{component}.plan").write_bytes(plan)
-        (stage / "manifest.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-        if output.exists():
-            raise FileExistsError(output)
-        os.rename(stage, output)
+    write_component(output, f"{component}.plan", plan, metadata)
     print(json.dumps(metadata, indent=2))
 
 

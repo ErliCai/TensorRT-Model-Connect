@@ -12,9 +12,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .config import FLOW_SHA256
-from .validate_flow_pytorch import _cases, _official_dit, _ieee_fp32_reference, ATOL, RTOL
+from ..artifacts import sha256_file
+from ..config import FLOW_SHA256
+from ..validation.validate_flow_pytorch import _cases, _official_dit, _ieee_fp32_reference, ATOL, RTOL
 
 
 def main():

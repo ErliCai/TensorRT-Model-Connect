@@ -110,7 +110,7 @@ def require_full(component):
     if any(not os.environ.get(x) for x in names):
         pytest.skip("Full-weight test requires " + ", ".join(names))
     model_dir, engine_dir = (Path(os.environ[x]) for x in names)
-    from tensorrt_model_connect.families.cosyvoice3.__main__ import sha256_file
+    from tensorrt_model_connect.families.cosyvoice3.artifacts import sha256_file
     from tensorrt_model_connect.families.cosyvoice3.config import MODEL_REVISION
 
     expected = {"llm": "69f43bd545131c30e98947fb360ea8b4dc9916d8e83dded7757c7ea4f5a24970",
@@ -178,7 +178,7 @@ def tiny_llm(tmp_path_factory):
 def test_tiny_llm_dynamic_cache_and_profile_boundaries(tiny_llm, length):
     import torch
     import torch.nn.functional as F
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _ieee_fp32_reference
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _ieee_fp32_reference
 
     engine, ref, decoder, _ = tiny_llm
     ids = torch.arange(length, device="cuda", dtype=torch.int32)[None]
@@ -242,7 +242,7 @@ def full_llm():
 def test_full_llm_prefill_cached_decode_and_reference(full_llm, length):
     import torch
     import torch.nn.functional as F
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _ieee_fp32_reference
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _ieee_fp32_reference
 
     engine, ref, embedding, decoder = full_llm
     ids = torch.tensor([[158497, 100, 151646, 158499] + [151936 + (i * 71) % 6561 for i in range(length - 4)]],
@@ -270,7 +270,7 @@ def full_hift():
     if not os.environ.get("COSYVOICE3_OFFICIAL_SOURCE"):
         pytest.skip("Requires the pinned official CosyVoice source")
     import torch
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _official_dit
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _official_dit
     from tensorrt_model_connect.families.cosyvoice3.hift import HiFTEngine
 
     _official_dit(Path(os.environ["COSYVOICE3_OFFICIAL_SOURCE"]))
@@ -302,7 +302,7 @@ def test_full_hift_f0_source_decode_and_waveform(full_hift, frames):
 
 def check_hift(full_hift, mel, noise, case):
     import torch
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _ieee_fp32_reference
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _ieee_fp32_reference
 
     engine, ref = full_hift
     frames = mel.shape[2]

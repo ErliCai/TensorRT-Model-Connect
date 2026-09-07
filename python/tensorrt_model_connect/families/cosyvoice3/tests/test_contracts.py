@@ -181,7 +181,7 @@ def test_build_records_implementation_and_workspace(tmp_path, monkeypatch):
     metadata = json.loads((args.output / "manifest.json").read_text())
     assert metadata["workspace_mib"] == 256
     assert metadata["implementation_sha256"]["flow_builder.py"] == cli.sha256_file(Path(flow_builder.__file__))
-    assert len(metadata["implementation_sha256"]) == 5
+    assert len(metadata["implementation_sha256"]) == 6
 
     # Simulate an implementation edit during the build without modifying files.
     args.output = tmp_path / "changed-source-output"
@@ -198,3 +198,38 @@ def test_build_records_implementation_and_workspace(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="implementation changed"):
         cli.build(args)
     assert not args.output.exists()
+
+
+def test_component_publication_preserves_existing_output(tmp_path):
+    from tensorrt_model_connect.families.cosyvoice3.artifacts import sha256_file, write_component
+
+    output = tmp_path / "component"
+    manifest = {"component": "fixture"}
+    write_component(output, "flow.plan", b"plan", manifest)
+    assert (output / "flow.plan").read_bytes() == b"plan"
+    assert json.loads((output / "manifest.json").read_text()) == manifest
+    original = sha256_file(output / "flow.plan")
+    with pytest.raises(FileExistsError):
+        write_component(output, "flow.plan", b"replacement", {})
+    assert sha256_file(output / "flow.plan") == original
+
+
+def test_component_publication_failure_is_not_visible(tmp_path, monkeypatch):
+    from tensorrt_model_connect.families.cosyvoice3 import artifacts
+
+    def fail(*args, **kwargs):
+        raise OSError("simulated publication failure")
+
+    monkeypatch.setattr(artifacts.os, "rename", fail)
+    with pytest.raises(OSError, match="simulated publication"):
+        artifacts.write_component(tmp_path / "component", "flow.plan", b"plan", {})
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("filename", ["../flow.plan", "manifest.json"])
+def test_component_publication_rejects_invalid_plan_name(tmp_path, filename):
+    from tensorrt_model_connect.families.cosyvoice3.artifacts import write_component
+
+    with pytest.raises(ValueError, match="plan_name"):
+        write_component(tmp_path / "component", filename, b"plan", {})
+    assert list(tmp_path.iterdir()) == []

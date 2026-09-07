@@ -15,9 +15,9 @@ pytestmark = pytest.mark.skipif(not source, reason="Set COSYVOICE3_OFFICIAL_SOUR
 @pytest.mark.parametrize("guidance", [0., .7])
 def test_against_unmodified_official_solver(steps, guidance):
     import torch
-    from tensorrt_model_connect.families.cosyvoice3.flow_matching import solve_euler
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _official_dit
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_trajectory import _official_solver
+    from tensorrt_model_connect.families.cosyvoice3.flow import solve_euler
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _official_dit
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_trajectory import _official_solver
 
     _official_dit(Path(source))
     ConditionalCFM, _ = _official_solver(Path(source))

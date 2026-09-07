@@ -13,10 +13,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .__main__ import sha256_file
-from .flow_runtime import FlowEngine, INPUT_NAMES
-from .flow_matching import solve_euler
-from .config import MODEL_ID, MODEL_REVISION, ORACLE_SHA256
+from ..artifacts import sha256_file
+from ..flow_runtime import FlowEngine, INPUT_NAMES
+from ..flow import solve_euler
+from ..config import MODEL_ID, MODEL_REVISION, ORACLE_SHA256
 from .parity_metrics import compare_outputs
 
 # Gates shared with the official-PyTorch validator, which documents their
@@ -25,15 +25,15 @@ from .validate_flow_pytorch import ATOL, INTEGRATED_ATOL, INTEGRATED_RTOL, RTOL
 
 
 def main(argv=None):
-    import onnxruntime as ort
-    import torch
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--component", type=Path, required=True)
     parser.add_argument("--oracle-onnx", type=Path, required=True)
     parser.add_argument("--frames", type=int, nargs="+", default=[4, 17, 64])
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
+    import onnxruntime as ort
+    import torch
+
     if args.report.exists():
         raise FileExistsError(f"Choose a new report path: {args.report}")
     oracle_hash = sha256_file(args.oracle_onnx)

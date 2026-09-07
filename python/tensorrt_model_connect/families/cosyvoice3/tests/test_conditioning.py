@@ -6,15 +6,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from tensorrt_model_connect.families.cosyvoice3.conditioning import TokenProfile, validate_weights, weight_shapes
 from tensorrt_model_connect.families.cosyvoice3.config import ShapeProfile
-from tensorrt_model_connect.families.cosyvoice3.offline_flow import OfflineFlow
-from tensorrt_model_connect.families.cosyvoice3.validate_offline_flow import acoustic_cases
+from tensorrt_model_connect.families.cosyvoice3.flow import OfflineFlow
+from tensorrt_model_connect.families.cosyvoice3.validation.validate_offline_flow import acoustic_cases
 
 
 @pytest.mark.parametrize("values", [(0, 32, 128), (2, 1, 128), (2, 32, 7501), (True, 32, 128), (2, 3.0, 128)])
@@ -117,8 +116,8 @@ def native_conditioner(tmp_path_factory):
         pytest.skip("Set COSYVOICE3_RUN_GPU_TESTS=1 and COSYVOICE3_OFFICIAL_SOURCE")
     import torch
     from tensorrt_model_connect.families.cosyvoice3.conditioning import build_engine, ConditioningEngine
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import _official_dit
-    from tensorrt_model_connect.families.cosyvoice3.validate_flow_trajectory import _official_solver
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_pytorch import _official_dit
+    from tensorrt_model_connect.families.cosyvoice3.validation.validate_flow_trajectory import _official_solver
 
     source = Path(os.environ["COSYVOICE3_OFFICIAL_SOURCE"])
     _official_dit(source)
