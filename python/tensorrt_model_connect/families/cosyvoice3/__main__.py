@@ -79,11 +79,58 @@ def main(argv=None):
     build_parser.add_argument("--opt-frames", type=int, default=64)
     build_parser.add_argument("--max-frames", type=int, default=256)
     build_parser.add_argument("--workspace-mib", type=int, default=512)
+    conditioner = commands.add_parser("build-conditioner", help="Build offline token/speaker preprocessing (not full TTS)")
+    conditioner.add_argument("--model-dir", type=Path, required=True)
+    conditioner.add_argument("--output", type=Path, required=True)
+    conditioner.add_argument("--min-tokens", type=int, default=2)
+    conditioner.add_argument("--opt-tokens", type=int, default=32)
+    conditioner.add_argument("--max-tokens", type=int, default=128)
+    conditioner.add_argument("--workspace-mib", type=int, default=64)
     args = parser.parse_args(argv)
     if args.command == "inspect":
         print(json.dumps({"target": MODEL_ID, "flow": asdict(read_config(args.model_dir)), "status": "component_only"}, indent=2))
-    else:
+    elif args.command == "build-flow":
         build(args)
+    else:
+        build_conditioner(args)
+
+
+def build_conditioner(args):
+    from tensorrt_model_connect import trt_compat
+    from .conditioning import TokenProfile, build_engine, load_weights
+
+    output = args.output.resolve()
+    if output.exists():
+        raise FileExistsError(output)
+    read_config(args.model_dir)
+    profile = TokenProfile(args.min_tokens, args.opt_tokens, args.max_tokens)
+    files = [Path(__file__).with_name(name) for name in ("__main__.py", "conditioning.py", "config.py")]
+    sources = {path.name: sha256_file(path) for path in files}
+    plan = build_engine(load_weights(args.model_dir), profile, workspace_mib=args.workspace_mib)
+    if sources != {path.name: sha256_file(path) for path in files}:
+        raise RuntimeError("Conditioner implementation changed during build")
+    manifest = {
+        "schema_version": 1, "component": "cosyvoice3_conditioner",
+        "status": "experimental_component_not_end_to_end_tts",
+        "target_model_id": MODEL_ID, "target_model_revision": MODEL_REVISION,
+        "equations_source_revision": SOURCE_REVISION,
+        "local_checkpoint_revision_verified": False,
+        "precision": "fp32", "tf32": False, "streaming": False,
+        "profile": asdict(profile), "plan_sha256": hashlib.sha256(plan).hexdigest(),
+        "tensorrt_version": trt_compat.module_version(), "workspace_mib": args.workspace_mib,
+        "source_sha256": {name: sha256_file(args.model_dir / name) for name in ("cosyvoice3.yaml", "flow.pt")},
+        "implementation_sha256": sources,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".cosyvoice3-conditioning-", dir=output.parent) as tmp:
+        stage = Path(tmp) / "component"
+        stage.mkdir()
+        (stage / "conditioning.plan").write_bytes(plan)
+        (stage / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        if output.exists():
+            raise FileExistsError(output)
+        os.rename(stage, output)
+    print(json.dumps(manifest, indent=2))
 
 
 if __name__ == "__main__":
