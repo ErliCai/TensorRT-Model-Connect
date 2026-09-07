@@ -364,6 +364,46 @@ def test_prepared_voice_validation(tmp_path):
             read_voice(path)
 
 
+@pytest.mark.parametrize("prompt_text,prompt_tokens", [("reference", []), ("   ", [1, 2])])
+def test_zero_shot_rejects_missing_reference_before_tokenization(monkeypatch, prompt_text, prompt_tokens):
+    from tensorrt_model_connect.families.cosyvoice3 import tts
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Invalid requests must not load the tokenizer")
+
+    monkeypatch.setattr(tts, "text_tokenizer", unexpected)
+    with pytest.raises(ValueError, match="Zero-shot"):
+        tts.encode_request("unused", "hello", prompt_text=prompt_text, prompt_tokens=prompt_tokens)
+
+
+def test_instruction_and_zero_shot_prompt_packing(monkeypatch):
+    from tensorrt_model_connect.families.cosyvoice3 import tts
+
+    class Tokenizer:
+        def encode(self, text, **kwargs):
+            return [10, END_OF_PROMPT, 11] if "<|endofprompt|>" in text else [7, 8]
+
+    monkeypatch.setattr(tts, "text_tokenizer", lambda path: Tokenizer())
+    instruction, length = tts.encode_request("unused", "hello", prompt_tokens=[2, 3])
+    zero_shot, _ = tts.encode_request("unused", "hello", prompt_text="reference", prompt_tokens=[2, 3])
+    assert length == 2
+    assert instruction == pack_prompt([7, 8], [10, END_OF_PROMPT, 11])
+    assert zero_shot == instruction + [151938, 151939]
+
+
+@pytest.mark.parametrize("changes", [{"seed": -1}, {"seed": 2**64}, {"seed": True},
+                                    {"max_tokens": 0}, {"max_tokens": True}])
+def test_synthesis_rejects_invalid_options_without_outputs(tmp_path, changes):
+    pytest.importorskip("torch")
+    pytest.importorskip("soundfile")
+    from tensorrt_model_connect.families.cosyvoice3.tts import synthesize
+
+    args = SimpleNamespace(**({"output": tmp_path / "result", "seed": 2512, "max_tokens": 100} | changes))
+    with pytest.raises(ValueError, match="seed|max_tokens"):
+        synthesize(args)
+    assert not args.output.exists()
+
+
 @GPU
 @pytest.mark.gpu
 def test_native_source_phase_boundaries(tmp_path):
@@ -387,6 +427,16 @@ def test_native_source_phase_boundaries(tmp_path):
     f0 = torch.from_numpy(np.random.default_rng(2512).uniform(0, 400, (1, 1, 256)).astype(np.float32)).cuda()
     noise = torch.zeros((1, 9, 256 * 480), dtype=torch.float32, device="cuda")
     actual = engine.run(f0=f0, noise=noise)
+    # Isolate the accumulation contract from any preceding division rounding.
+    # Spell out the recurrence so this test does not depend on a particular
+    # PyTorch cumsum kernel/layout choosing serial rather than parallel scan.
+    running = torch.zeros_like(actual["rad"][:, :, :1])
+    states = []
+    for index in range(actual["rad"].shape[2]):
+        running = running + actual["rad"][:, :, index:index + 1]
+        states.append(running)
+    chronological = torch.cat(states, 2)
+    torch.testing.assert_close(actual["cumulative"], chronological, atol=0, rtol=0)
     rad = (f0 * torch.arange(1, 10, dtype=torch.float32, device="cuda")[None, :, None] / 24000) % 1
     cumulative = rad.cumsum(2)
     phase = cumulative * (2 * np.pi) * 480

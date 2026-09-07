@@ -67,7 +67,7 @@ def main(argv=None):
     conditioner.add_argument("--opt-tokens", type=int, default=32)
     conditioner.add_argument("--max-tokens", type=int, default=128)
     conditioner.add_argument("--workspace-mib", type=int, default=64)
-    for component in ("llm", "hift"):
+    for component in ("llm", "hift", "campplus", "speech-tokenizer"):
         command = commands.add_parser(f"build-{component}", help=f"Build native offline {component} component")
         command.add_argument("--model-dir", type=Path, required=True)
         command.add_argument("--output", type=Path, required=True)
@@ -77,8 +77,11 @@ def main(argv=None):
             command.add_argument("--opt-tokens", type=int, default=64)
         else:
             command.add_argument("--min-frames", type=int, default=4)
-            command.add_argument("--opt-frames", type=int, default=64)
-            command.add_argument("--max-frames", type=int, default=256)
+            command.add_argument("--opt-frames", type=int, default=64 if component == "hift" else 500)
+            command.add_argument("--max-frames", type=int, default=256 if component == "hift" else 3000)
+    voice = commands.add_parser("prepare-voice", help="Reference WAV -> native TensorRT frontend -> voice NPZ")
+    for name in ("audio", "campplus", "speech-tokenizer", "output"):
+        voice.add_argument(f"--{name}", type=Path, required=True)
     tts = commands.add_parser("synthesize", help="Offline text + prepared voice NPZ -> WAV (experimental, unqualified)")
     for name in ("model-dir", "llm", "conditioner", "flow", "hift", "voice", "output"):
         tts.add_argument(f"--{name}", type=Path, required=True)
@@ -99,6 +102,10 @@ def main(argv=None):
         from .tts import synthesize
 
         synthesize(args)
+    elif args.command == "prepare-voice":
+        from .tts import prepare_voice
+
+        prepare_voice(args)
     else:
         build_speech_component(args)
 
@@ -136,12 +143,13 @@ def build_conditioner(args):
 def build_speech_component(args):
     from tensorrt_model_connect import trt_compat
 
-    component = args.command.removeprefix("build-")
+    component = args.command.removeprefix("build-").replace("-", "_")
+    frontend = component in ("campplus", "speech_tokenizer")
     output = args.output.resolve()
     if output.exists():
         raise FileExistsError(output)
     files = [Path(__file__).with_name(name) for name in
-             ("__main__.py", "artifacts.py", "components.py", f"{component}.py", "config.py")]
+             ("__main__.py", "artifacts.py", "components.py", "frontend.py" if frontend else f"{component}.py", "config.py")]
     sources = {path.name: sha256_file(path) for path in files}
     metadata = {}
     if component == "llm":
@@ -153,13 +161,22 @@ def build_speech_component(args):
         metadata.update(architecture=asdict(cfg), max_context=args.max_context, opt_tokens=args.opt_tokens,
                         compact_kv_cache=True, checkpoint="llm.pt")
         checkpoint_files = ("llm.pt", "cosyvoice3.yaml", "CosyVoice-BlankEN/config.json")
+    elif frontend:
+        from .frontend import CHECKPOINTS, FrontendProfile, build_engine
+
+        profile = FrontendProfile(args.min_frames, args.opt_frames, args.max_frames)
+        plan = build_engine(args.model_dir, component, profile, workspace_mib=args.workspace_mib)
+        metadata.update(profile=asdict(profile), batch_size=1, padded_input=False,
+                        learned_execution="native_tensorrt", checkpoint_checksum_verified=True)
+        checkpoint_files = (CHECKPOINTS[component][0],)
     else:
         from .hift import build_engine, load_weights
 
         profile = ShapeProfile(args.min_frames, args.opt_frames, args.max_frames)
         plan = build_engine(load_weights(args.model_dir), profile, workspace_mib=args.workspace_mib)
         metadata.update(profile=asdict(profile), sample_rate=24000, samples_per_frame=480,
-                        f0_precision="fp32_reference_uses_fp64", finalize=True, noise="explicit_uniform_0_1")
+                        f0_precision="fp32_reference_uses_fp64", finalize=True, noise="explicit_uniform_0_1",
+                        phase_accumulation="chronological_fp32_recurrence")
         checkpoint_files = ("hift.pt", "cosyvoice3.yaml")
     if sources != {path.name: sha256_file(path) for path in files}:
         raise RuntimeError("Component implementation changed during build; rebuild a stable snapshot")

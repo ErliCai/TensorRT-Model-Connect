@@ -134,7 +134,20 @@ def add_source(g, f0, noise, weights):
     harmonics = g.ew(f0, g.const(np.arange(1, 10, dtype=np.float32)[None, :, None]), "PROD")
     rad = g.ew(harmonics, g.scalar(24000, 3), "DIV")
     rad = g.ew(rad, g.unary(rad, "FLOOR"), "SUB")
-    phase = net.add_cumulative(rad, g.const(np.array(2, np.int32)), t.CumulativeOperation.SUM, False, False).get_output(0)
+    # Preserve the chronological FP32 phase recurrence of the declared causal
+    # reference. A parallel prefix sum can round differently, which becomes
+    # a waveform mismatch after phase amplification and decoding.
+    # This is a model-local recurrence; TensorRT still owns GPU execution.
+    loop = net.add_loop()
+    count = g.reshape(g.dim(rad, 2), ())
+    loop.add_trip_limit(count, t.TripLimit.COUNT)
+    current = loop.add_iterator(rad, 2, False).get_output(0)
+    state = loop.add_recurrence(g.const(np.zeros((1, 9), np.float32)))
+    update = g.ew(state.get_output(0), current, "SUM")
+    state.set_input(1, update)
+    collected = loop.add_loop_output(update, t.LoopOutput.CONCATENATE, 2)
+    collected.set_input(1, count)
+    phase = collected.get_output(0)
     cumulative = phase
     phase = g.ew(g.ew(phase, g.scalar(2 * np.pi, 3), "PROD"), g.scalar(480, 3), "PROD")
     sine = g.ew(g.unary(g.repeat(phase, 480), "SIN"), g.scalar(.1, 3), "PROD")

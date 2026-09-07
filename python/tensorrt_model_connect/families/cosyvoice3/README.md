@@ -9,8 +9,9 @@ no exported `plugin`, runtime strategy, or E2E manifest claiming otherwise.
 
 ```text
 cosyvoice3/
-  __main__.py          # inspect / build-* / synthesize CLI
-  tts.py               # text -> speech tokens -> Mel -> waveform
+  __main__.py          # inspect / build-* / prepare-voice / synthesize CLI
+  tts.py               # reference audio preparation and offline TTS composition
+  frontend.py          # native CAMPPlus and speech tokenizer graphs/runtimes
   llm.py, hift.py      # native LLM and vocoder graphs/runtimes
   flow.py              # Euler solver and offline token-to-Mel composition
   conditioning.py      # token and speaker conditioning
@@ -62,21 +63,25 @@ Implemented:
 - An experimental Python `synthesize` command: plain text plus an explicit
   prepared voice NPZ -> speech tokens -> Mel -> 24 kHz WAV. Each engine is
   unloaded before the next stage to limit memory on an 8 GB GPU.
+- Native FP32 CAMPPlus and speech tokenizer v3, including all 617/198 published
+  initializer tensors, with exact checkpoint checksums. `prepare-voice` decodes
+  reference WAV, computes non-learned features, runs these two TensorRT engines
+  sequentially and writes the explicit voice NPZ consumed by `synthesize`.
 - Dependency-light contract tests, solver tests, and an explicit numerical
   comparison command using the upstream FP32 ONNX as an independent oracle.
 
 Not implemented yet:
 
-- Text normalization, phoneme/paralinguistic tags and native reference-audio
-  feature extraction. The new local tokenizer handles plain text and the
+- Text normalization and phoneme/paralinguistic tags. The local text tokenizer handles plain text and the
   instruction boundary, not every upstream tokenizer extension.
-- Streaming, request-time reference-WAV processing and qualified voice cloning.
+- Streaming, a single-call reference-WAV synthesis API and qualified voice cloning.
 - Bundle packaging, the family-owned C++ pipeline/DSO, three-root `MODEL.toml`
   registration, and full TTS E2E/reference validation and isolated-family CI.
 
 All model equations/build/runtime code live in this family; no sibling model
-implementation is imported. The ONNX graph is used **only as a test oracle**,
-not parsed into the native engine. This is a development component, not yet
+implementation is imported. Published ONNX files provide build-time weights
+and independent test oracles; no TensorRT ONNX parser is used, and production
+inference never calls ONNX Runtime. This is a development component, not yet
 an upstream-ready model-family contribution.
 
 ## New LLM and HiFT development path (2026-09-08)
@@ -97,13 +102,68 @@ python -m tensorrt_model_connect.families.cosyvoice3 synthesize \
 
 `voice.npz` must contain exactly `prompt_tokens` INT32 `[1,N]`,
 `prompt_features` FP32 `[1,2N,80]`, and a nonzero `speaker` FP32 `[1,192]`.
-Preparing these from reference audio is outside this native entry point;
+Use the explicit native `prepare-voice` command below to obtain these arrays;
 there is no hidden official-model fallback. Without `--prompt-text` the LLM
 uses instruction mode (no reference speech tokens in its prompt); Flow still
 uses the prepared voice. With `--prompt-text`, supply the exact transcript
 corresponding to the complete provided reference speech tokens.
 
-The entry point inserts `<|endofprompt|>` itself. It deliberately rejects
+## Native reference-audio frontend
+
+```bash
+python -m tensorrt_model_connect.families.cosyvoice3 build-campplus \
+  --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 --output /new/campplus
+python -m tensorrt_model_connect.families.cosyvoice3 build-speech-tokenizer \
+  --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 --output /new/speech-tokenizer
+python -m tensorrt_model_connect.families.cosyvoice3 prepare-voice \
+  --audio /path/to/reference.wav --campplus /new/campplus \
+  --speech-tokenizer /new/speech-tokenizer --output /new/reference-voice
+# Pass /new/reference-voice/voice.npz as --voice to synthesize.
+```
+
+The input is one unpadded recording, 0.1–30 seconds, at least 16 kHz; stereo is
+averaged to mono. Defaults cover 4–3000 feature frames. The tokenizer uses
+128-bin Whisper log-mel, two stride-two convolutions, twelve attention/FSMN
+blocks, shared published RoPE tables and eight ternary scalar quantizers
+(6561 possible tokens). CAMPPlus uses mean-centered 80-bin Kaldi filterbanks,
+convolutional/dense context blocks and unbiased temporal statistics to produce
+a 192-dimensional speaker vector. Length masks are identically true in this
+explicit unpadded batch-one contract; padded batches are not supported.
+
+Build-time dependencies include `onnx` for checkpoint tensor reading, not
+conversion or execution. Audio preparation uses `soundfile`, `torchaudio`,
+`openai-whisper` (feature function only), `librosa`, NumPy and PyTorch signal
+processing. No official CosyVoice checkout or learned PyTorch model is needed
+for production. `onnxruntime` is required only by the independent parity tests.
+
+`prepare-voice` records recording/plan/output checksums and crops reference
+tokens/Mel to the upstream 2:1 alignment. It refuses existing output paths.
+The downstream conditioner/Flow profiles must still accommodate reference
+tokens **plus generated tokens**; a 30-second frontend profile does not enlarge
+the other engines, and there is no silent reference truncation to fit them.
+
+Run `tests/test_frontend.py` with `COSYVOICE3_RUN_GPU_TESTS=1`,
+`COSYVOICE3_MODEL_DIR`, `COSYVOICE3_CAMPPLUS_ENGINE`,
+`COSYVOICE3_SPEECH_TOKENIZER_ENGINE` and `COSYVOICE3_OFFICIAL_SOURCE`.
+Set `COSYVOICE3_FRONTEND_EVIDENCE` to a fresh directory to retain each comparison
+and its exact arrays. Token IDs must match exactly; speaker vectors use
+`atol=1e-3, rtol=1e-4`. Tests include segment boundaries, longest shapes and two
+recordings. Three sample rates independently compare Mel extraction against
+the checksum-pinned official Matcha implementation with zero tolerance.
+These checks do not replace the separate, still-unqualified HiFT waveform gates
+or establish perceptual voice-cloning quality.
+
+On the recorded WSL RTX 4070 Laptop / TensorRT 11.1.0.106 run, the final frontend
+engines passed 11/11 cases each (tokens exact; maximum speaker absolute error
+3.505e-5). All 38 frontend tests passed, including the no-ONNX-runtime
+preparation test. Default RAS synthesis with the newly prepared one-second
+reference produced a finite, nonzero 0.88-second WAV. An additional greedy
+scenario hit the LLM length limit and remains a recorded failure; it was not
+converted to a success by changing the stop rule. These are distinct workloads.
+
+## Speech generation behavior and existing HiFT qualification
+
+The synthesis entry point inserts `<|endofprompt|>` itself. It deliberately rejects
 control/phoneme tags in plain-text arguments. RAS uses the published sampling
 rule but a local NumPy RNG; equal seeds do not imply identical sampled tokens
 to PyTorch. Greedy argmax is available explicitly with `--greedy`.
@@ -120,8 +180,9 @@ The 256-frame Flow limit includes the prompt: 25 prompt tokens leave at most
 
 ### New tests and known failures
 
-All new maintained tests are in `tests/test_speech_components.py` in this
-family, alongside the existing development-component tests. No new diagnostic
+LLM/HiFT maintained tests are in `tests/test_speech_components.py`; reference
+frontend tests are in `tests/test_frontend.py`, alongside the existing
+development-component tests. No new production diagnostic
 CLI scripts were added. The family has not yet moved to registered E2E ownership.
 
 ```bash
@@ -177,6 +238,27 @@ Dependency-light regression: WSL 93 passed / 35 skipped; Windows 71 passed /
 do not include or erase the failing full-weight checks.
 
 The remaining sections preserve the earlier Flow validation history.
+
+### Python completion follow-up (still incomplete)
+
+The causal source now expresses chronological FP32 phase accumulation with a
+TensorRT Loop/Recurrence. On the declared reference environment, this matches
+the official interleaved time scan; a parallel cumulative sum rounds
+differently. The manifest records `phase_accumulation`. This is reference
+consistency work, not a perceptual-quality or higher-precision claim.
+
+HiFT 04 (`trtmc-cosyvoice3-hift-fp32-04`) passed all eight same-F0 waveform
+comparisons and five of eight full-waveform cases under the unchanged gates.
+The remaining failures are synthetic 256 and acoustic 64/256. An attempted
+four-channel F0 reduction (HiFT 05) still failed three cases and regressed a
+same-F0 comparison; that experiment was reverted, with its evidence retained.
+The retained implementation uses the original 16-channel F0 reductions.
+
+Zero-shot prompt text now requires nonempty reference speech tokens and a
+nonblank transcript. Invalid seeds or generation limits are rejected before
+creating output directories. Raw-reference-audio frontend integration and
+full waveform/quality qualification remain unfinished; prepared NPZ input is
+still required. No C++ integration or full Python completion is claimed.
 
 ## Validation status (2026-09-07; baseline before acoustic integration)
 

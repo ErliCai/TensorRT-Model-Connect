@@ -41,6 +41,8 @@ def encode_request(model_dir, text, *, instruction="You are a helpful assistant.
             raise ValueError(f"{name}: this entry point accepts plain text, not control/phoneme tags")
     if not text.strip() or not instruction.strip():
         raise ValueError("Text and instruction must not be empty")
+    if prompt_text and (not prompt_text.strip() or len(prompt_tokens) == 0):
+        raise ValueError("Zero-shot prompt text requires a nonempty transcript and reference speech tokens")
     tokenizer = text_tokenizer(model_dir)
     text_ids = tokenizer.encode(text, add_special_tokens=False)
     prompt_ids = tokenizer.encode(instruction + "<|endofprompt|>" + prompt_text, add_special_tokens=False)
@@ -66,6 +68,84 @@ def read_voice(path):
     return voice
 
 
+def reference_features(audio):
+    """Non-learned signal processing, matching the pinned official frontend.
+
+    SoundFile decodes, torchaudio resamples/computes Kaldi filterbanks, and
+    Whisper's log-mel function computes features only (no Whisper model).
+    The 24 kHz mel equations are family-owned and need no official checkout.
+    """
+    import soundfile
+    import torch
+    import torchaudio
+    import whisper
+    from librosa.filters import mel as mel_filters
+    from torchaudio.compliance.kaldi import fbank
+
+    info = soundfile.info(audio)
+    if info.samplerate < 16000 or not 0.1 <= info.frames / info.samplerate <= 30:
+        raise ValueError("Reference audio requires 0.1–30 seconds at >= 16 kHz")
+    samples, sr = soundfile.read(audio, dtype="float32", always_2d=True)
+    if not np.isfinite(samples).all():
+        raise ValueError("Reference audio contains NaN/Inf")
+    waveform = torch.from_numpy(samples.T.copy()).mean(0, keepdim=True)
+    # Match upstream's cached FP32 resampling kernel. The functional API
+    # computes its kernel differently and is not bit-identical here.
+    speech16 = torchaudio.transforms.Resample(sr, 16000)(waveform) if sr != 16000 else waveform
+    speech24 = torchaudio.transforms.Resample(sr, 24000)(waveform) if sr != 24000 else waveform
+    bank = fbank(speech16, num_mel_bins=80, dither=0, sample_frequency=16000)
+    speaker = (bank - bank.mean(0, keepdim=True))[None].contiguous()
+    tokens = whisper.log_mel_spectrogram(speech16, n_mels=128).contiguous()
+    padded = torch.nn.functional.pad(speech24[:, None], (720, 720), mode="reflect")[:, 0]
+    spectrum = torch.view_as_real(torch.stft(padded, 1920, hop_length=480, win_length=1920,
+                                            window=torch.hann_window(1920), center=False,
+                                            normalized=False, onesided=True, return_complex=True))
+    magnitude = torch.sqrt(spectrum.pow(2).sum(-1) + 1e-9)
+    basis = torch.from_numpy(mel_filters(sr=24000, n_fft=1920, n_mels=80, fmin=0, fmax=None))
+    mel = torch.log(torch.clamp(basis @ magnitude, min=1e-5)).transpose(1, 2).contiguous()
+    return {"speaker_features": speaker, "token_features": tokens, "mel": mel}
+
+
+def prepare_voice(args):
+    """Reference WAV -> native TensorRT speaker/tokens -> explicit voice NPZ."""
+    import torch
+    from .artifacts import sha256_file
+    from .frontend import FrontendEngine
+
+    output = args.output.resolve()
+    if output.exists():
+        raise FileExistsError(output)
+    audio_digest = sha256_file(args.audio)
+    features = reference_features(args.audio)
+    plans, values = {}, {}
+    for component, path, feature_name in (("campplus", args.campplus, "speaker_features"),
+                                           ("speech_tokenizer", args.speech_tokenizer, "token_features")):
+        engine = FrontendEngine(path, component)
+        result = engine.extract(features[feature_name].to(engine.device))
+        values.update({key: tensor.cpu().numpy().copy() for key, tensor in result.items()})
+        plans[component] = engine.manifest["plan_sha256"]
+        del result, engine
+        gc.collect()
+        torch.cuda.empty_cache()
+    count = min(values["tokens"].shape[1], features["mel"].shape[1] // 2)
+    if count < 1 or not np.linalg.norm(values["speaker"].astype(np.float64)):
+        raise ValueError("Reference audio produced no usable voice conditioning")
+    if np.any((values["tokens"] < 0) | (values["tokens"] >= 6561)):
+        raise RuntimeError("Speech tokenizer produced an out-of-vocabulary token")
+    if sha256_file(args.audio) != audio_digest:
+        raise RuntimeError("Reference audio changed during extraction")
+    output.mkdir(parents=True, exist_ok=False)
+    np.savez(output / "voice.npz", prompt_tokens=values["tokens"][:, :count],
+             prompt_features=features["mel"][:, :count * 2].numpy(), speaker=values["speaker"])
+    read_voice(output / "voice.npz")
+    report = {"status": "completed_unqualified", "learned_execution": "native_tensorrt",
+              "audio_sha256": audio_digest, "component_plan_sha256": plans,
+              "voice_sha256": sha256_file(output / "voice.npz"), "prompt_tokens": count,
+              "prompt_mel_frames": 2 * count, "alignment": "official_24khz_crop_2_frames_per_token"}
+    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+
+
 def synthesize(args):
     """Unload each stage before the next, so this development path fits an 8 GB GPU."""
     import torch
@@ -79,6 +159,10 @@ def synthesize(args):
     output = args.output.resolve()
     if output.exists():
         raise FileExistsError(output)
+    if type(args.seed) is not int or not 0 <= args.seed < 2**64:
+        raise ValueError("seed must be an integer in [0, 2**64)")
+    if type(args.max_tokens) is not int or args.max_tokens < 1:
+        raise ValueError("max_tokens must be a positive integer")
     voice = read_voice(args.voice)
     packed, text_length = encode_request(args.model_dir, args.text, instruction=args.instruction,
                                          prompt_text=args.prompt_text, prompt_tokens=voice["prompt_tokens"][0].tolist())
