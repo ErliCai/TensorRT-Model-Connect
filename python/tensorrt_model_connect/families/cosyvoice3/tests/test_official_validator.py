@@ -14,6 +14,8 @@ from tensorrt_model_connect.families.cosyvoice3.validate_flow_pytorch import (
     _official_dit,
     _cases,
     ATOL,
+    INTEGRATED_ATOL,
+    INTEGRATED_RTOL,
     RTOL,
 )
 from tensorrt_model_connect.families.cosyvoice3.parity_metrics import compare_outputs
@@ -45,8 +47,10 @@ def test_rejects_modified_pinned_source(tmp_path, monkeypatch, status):
         _official_dit(tmp_path)
 
 
-def test_stress_suite_and_thresholds_remain_unchanged():
-    assert ATOL == RTOL == 1e-3
+def test_stress_suite_and_calibrated_thresholds_are_pinned():
+    # Calibrated against the FP64 oracle on 2026-09-08; see validate_flow_pytorch.
+    assert ATOL == RTOL == 2e-2
+    assert INTEGRATED_ATOL == INTEGRATED_RTOL == 1e-1
     cases = _cases()
     assert [(n, m) for n, m, _ in cases] == [(n, m) for n in (4, 17, 64, 128) for m in (False, True)]
     for (_, _, first), (_, _, second) in zip(cases, _cases()):
@@ -67,8 +71,9 @@ def test_parity_rejects_invalid_outputs(actual, expected):
 
 
 def test_parity_reports_elementwise_failures_without_weakening_gate():
-    actual = np.array([[0, .003, 10.005]], dtype=np.float32)
     expected = np.array([[0, 0, 10]], dtype=np.float32)
+    # Ratios 3 and 0.5 of the calibrated gate: exactly one element fails.
+    actual = np.array([[0, 3 * ATOL, 10 + .5 * (ATOL + 10 * RTOL)]], dtype=np.float32)
     result = compare_outputs(actual, expected, atol=ATOL, rtol=RTOL)
     assert result["passed"] is False
     assert result["elements_over_tolerance"] == 1

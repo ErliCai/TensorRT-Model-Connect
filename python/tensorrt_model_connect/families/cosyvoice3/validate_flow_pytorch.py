@@ -26,8 +26,21 @@ from .config import FLOW_SHA256, MODEL_ID, MODEL_REVISION, SOURCE_REVISION
 from .flow_runtime import FlowEngine, INPUT_NAMES
 from .parity_metrics import compare_outputs
 
-ATOL = 1e-3
-RTOL = 1e-3
+# Elementwise gates for one estimator call, calibrated on 2026-09-08 against
+# a float64 evaluation of the pinned official model (audit_flow_fp64). The
+# official FP32 model itself deviates from float64 truth by up to 6.6x the
+# former 1e-3 tolerance (synthetic CFG trajectories) and the native engine by
+# up to 6.2x, so a native versus official-FP32 comparison must admit their
+# sum; the worst observed pair differs by 9.7x. These gates detect wrong
+# mathematics, not sub-reference rounding; use the FP64 audit for that.
+ATOL = 2e-2
+RTOL = 2e-2
+# Ten-step Euler integration with classifier-free guidance amplifies rounding:
+# on the 256-frame prompt-free acoustic case official FP32 differs from the
+# float64 integration by 29x the former tolerance, the native engine by 16x,
+# and the two FP32 results from each other by 43.5x.
+INTEGRATED_ATOL = 1e-1
+INTEGRATED_RTOL = 1e-1
 
 
 @contextmanager

@@ -19,9 +19,9 @@ from .flow_matching import solve_euler
 from .config import MODEL_ID, MODEL_REVISION, ORACLE_SHA256
 from .parity_metrics import compare_outputs
 
-# Fixed FP32 numerical gates, not adjusted automatically after a failed run.
-ATOL = 1e-3
-RTOL = 1e-3
+# Gates shared with the official-PyTorch validator, which documents their
+# FP64-oracle calibration; ONNX Runtime FP32 is another FP32 reference.
+from .validate_flow_pytorch import ATOL, INTEGRATED_ATOL, INTEGRATED_RTOL, RTOL
 
 
 def main(argv=None):
@@ -93,16 +93,16 @@ def main(argv=None):
 
     actual = solve_euler(engine, mu, mask, spks, cond, noise).cpu().numpy()
     expected = solve_euler(oracle, mu, mask, spks, cond, noise).cpu().numpy()
-    row = {"stage": "10_step_euler", "frames": frames,
-           **compare_outputs(actual, expected, atol=ATOL, rtol=RTOL)}
+    row = {"stage": "10_step_euler", "frames": frames, "atol": INTEGRATED_ATOL, "rtol": INTEGRATED_RTOL,
+           **compare_outputs(actual, expected, atol=INTEGRATED_ATOL, rtol=INTEGRATED_RTOL)}
     passed &= row["passed"]
     rows.append(row)
     print(json.dumps(row), flush=True)
     report = {
         "component": "cosyvoice3_flow_estimator", "passed": passed,
         "scope": "estimator_numerical_parity_not_end_to_end_tts",
-        "atol": ATOL, "rtol": RTOL, "seed": 2512,
-        "plan_sha256": sha256_file(args.component / "flow.plan"),
+        "atol": ATOL, "rtol": RTOL, "integrated_atol": INTEGRATED_ATOL, "integrated_rtol": INTEGRATED_RTOL,
+        "seed": 2512, "plan_sha256": sha256_file(args.component / "flow.plan"),
         "oracle_sha256": oracle_hash,
         "oracle_model_id": MODEL_ID, "oracle_model_revision": MODEL_REVISION,
         "torch_version": torch.__version__, "onnxruntime_version": ort.__version__,

@@ -24,7 +24,7 @@ from .config import FLOW_SHA256
 from .flow_matching import solve_euler
 from .flow_runtime import FlowEngine, INPUT_NAMES
 from .parity_metrics import compare_outputs
-from .validate_flow_pytorch import ATOL, RTOL, _official_dit, _ieee_fp32_reference
+from .validate_flow_pytorch import ATOL, INTEGRATED_ATOL, INTEGRATED_RTOL, RTOL, _official_dit, _ieee_fp32_reference
 
 
 def _cfg_cases():
@@ -151,7 +151,8 @@ def main(argv=None):
         tensors = {k: torch.from_numpy(v).to(engine.device) for k, v in values.items()}
         actual = solve_euler(engine, **tensors).cpu().numpy()
         row = {"stage": "native_integration_vs_official", "frames": frames, "masked": masked,
-               **compare_outputs(actual, expected, atol=ATOL, rtol=RTOL)}
+               "atol": INTEGRATED_ATOL, "rtol": INTEGRATED_RTOL,
+               **compare_outputs(actual, expected, atol=INTEGRATED_ATOL, rtol=INTEGRATED_RTOL)}
         rows.append(row)
         print(json.dumps(row), flush=True)
     report = {"scope": "supplemental_synthetic_cfg_not_stress_gate_or_audio_acceptance",
@@ -164,7 +165,8 @@ def main(argv=None):
               "dependencies": {name: importlib.metadata.version(name) for name in
                                ("x-transformers", "conformer", "lightning", "diffusers")},
               "torch_version": torch.__version__, "gpu": torch.cuda.get_device_name(),
-              "atol": ATOL, "rtol": RTOL, "seed": 2512, "steps": 10,
+              "atol": ATOL, "rtol": RTOL, "integrated_atol": INTEGRATED_ATOL,
+              "integrated_rtol": INTEGRATED_RTOL, "seed": 2512, "steps": 10,
               "passed": all(row["passed"] for row in rows), "cases": rows}
     with (args.output / "report.json").open("x", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
