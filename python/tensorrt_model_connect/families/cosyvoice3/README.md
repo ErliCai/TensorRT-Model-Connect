@@ -1,4 +1,4 @@
-# CosyVoice3: experimental native Flow component
+# CosyVoice3: experimental native offline TTS components
 
 This directory starts the implementation of
 `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`. **It does not yet add end-to-end
@@ -21,14 +21,25 @@ Implemented:
 - Native offline token embedding, pre-lookahead convolutions, 2x mel-frame
   expansion and normalized speaker projection, plus `OfflineFlow` composition
   with prompt alignment/cropping and explicit noise (speech tokens -> mel).
+- Native FP32 Qwen2 speech decoder from `llm.pt`: all 24 layers, compact
+  two-head GQA KV cache, separate text/speech embeddings, CosyVoice3 prompt
+  packing, RAS sampling and all 200 stop classes. This does not select `llm.rl.pt`.
+- Native offline HiFT/F0, causal repeat-then-convolve upsampling, Snake blocks,
+  explicit uniform excitation noise, Hann STFT and overlap-normalized inverse
+  STFT. F0 uses FP32 with short channel reductions; upstream inference uses
+  FP64. Long-waveform reference consistency is **not yet qualified**.
+- An experimental Python `synthesize` command: plain text plus an explicit
+  prepared voice NPZ -> speech tokens -> Mel -> 24 kHz WAV. Each engine is
+  unloaded before the next stage to limit memory on an 8 GB GPU.
 - Dependency-light contract tests, solver tests, and an explicit numerical
   comparison command using the upstream FP32 ONNX as an independent oracle.
 
 Not implemented yet:
 
-- Text normalization/tokenization and reference-audio feature extraction.
-- Qwen2-based speech-token generation, sampling and termination.
-- HiFT/F0 waveform synthesis, streaming and request-time voice cloning.
+- Text normalization, phoneme/paralinguistic tags and native reference-audio
+  feature extraction. The new local tokenizer handles plain text and the
+  instruction boundary, not every upstream tokenizer extension.
+- Streaming, request-time reference-WAV processing and qualified voice cloning.
 - Bundle packaging, the family-owned C++ pipeline/DSO, three-root `MODEL.toml`
   registration, and full TTS E2E/reference validation and isolated-family CI.
 
@@ -36,6 +47,105 @@ All model equations/build/runtime code live in this family; no sibling model
 implementation is imported. The ONNX graph is used **only as a test oracle**,
 not parsed into the native engine. This is a development component, not yet
 an upstream-ready model-family contribution.
+
+## New LLM and HiFT development path (2026-09-08)
+
+```bash
+python -m tensorrt_model_connect.families.cosyvoice3 build-llm \
+  --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 --output /new/llm \
+  --max-context 512 --opt-tokens 64
+python -m tensorrt_model_connect.families.cosyvoice3 build-hift \
+  --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 --output /new/hift \
+  --min-frames 4 --opt-frames 64 --max-frames 256
+python -m tensorrt_model_connect.families.cosyvoice3 synthesize \
+  --model-dir /path/to/Fun-CosyVoice3-0.5B-2512 \
+  --llm /new/llm --conditioner /existing/conditioner --flow /existing/flow \
+  --hift /new/hift --voice /path/to/voice.npz \
+  --text '你好，欢迎。' --max-tokens 100 --seed 2512 --output /new/synthesis
+```
+
+`voice.npz` must contain exactly `prompt_tokens` INT32 `[1,N]`,
+`prompt_features` FP32 `[1,2N,80]`, and a nonzero `speaker` FP32 `[1,192]`.
+Preparing these from reference audio is outside this native entry point;
+there is no hidden official-model fallback. Without `--prompt-text` the LLM
+uses instruction mode (no reference speech tokens in its prompt); Flow still
+uses the prepared voice. With `--prompt-text`, supply the exact transcript
+corresponding to the complete provided reference speech tokens.
+
+The entry point inserts `<|endofprompt|>` itself. It deliberately rejects
+control/phoneme tags in plain-text arguments. RAS uses the published sampling
+rule but a local NumPy RNG; equal seeds do not imply identical sampled tokens
+to PyTorch. Greedy argmax is available explicitly with `--greedy`.
+The upstream native `sampling_ids` masks only class 6561 before its minimum
+length, although CosyVoice3 has 200 stop classes. This behavior is retained,
+not silently corrected or interpreted as a guaranteed minimum output length.
+
+All output directories must be new. The pipeline saves tokens, Mel, WAV and
+a report binding the plans, voice file, tokenizer and seed. A length limit
+without a stop token is an error, not successful truncated speech. A successful
+run is marked `completed_unqualified`, not a model-support or quality pass.
+The 256-frame Flow limit includes the prompt: 25 prompt tokens leave at most
+103 target tokens. Every component profile must fit the requested workload.
+
+### New tests and known failures
+
+All new maintained tests are in `tests/test_speech_components.py` in this
+family, alongside the existing development-component tests. No new diagnostic
+CLI scripts were added. The family has not yet moved to registered E2E ownership.
+
+```bash
+# CPU contracts; GPU tests are opt-in.
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest \
+  python/tensorrt_model_connect/families/cosyvoice3/tests/test_speech_components.py -q
+
+# Small native graphs, no full checkpoints required.
+COSYVOICE3_RUN_GPU_TESTS=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest \
+  python/tensorrt_model_connect/families/cosyvoice3/tests/test_speech_components.py \
+  -q -s -k 'tiny_llm or source_phase'
+```
+
+Full-weight tests require `COSYVOICE3_RUN_GPU_TESTS=1`, `COSYVOICE3_MODEL_DIR`,
+`COSYVOICE3_LLM_ENGINE`, `COSYVOICE3_HIFT_ENGINE`, and for HiFT the clean pinned
+`COSYVOICE3_OFFICIAL_SOURCE`. Select `-k full_llm` or `-k full_hift` separately
+to limit GPU memory. Set `COSYVOICE3_ACOUSTIC_EVIDENCE` to an existing
+`validate_offline_flow` `acoustic_evidence.npz` for real-Mel cases. Optional
+`COSYVOICE3_SPEECH_EVIDENCE` must name a fresh directory; failures persist
+metrics before assertions. The tests verify the fixed LLM/HiFT checkpoint
+hashes, engine checkpoint binding and retain environment/plan metadata.
+
+The execution smoke additionally requires `COSYVOICE3_FLOW_ENGINE`,
+`COSYVOICE3_CONDITIONER_ENGINE`, `COSYVOICE3_ACOUSTIC_REQUESTS` (the existing
+acoustic validator's `requests.npz`) and optionally a new `COSYVOICE3_TTS_OUTPUT`.
+Select `-k offline_text`; this also materializes an explicit prepared test voice.
+See `notes/08-cosyvoice3-test-guide.html` for this workstation's complete commands.
+
+First complete execution produced 22 speech tokens, EOS 6562 and a 24 kHz,
+0.88-second WAV for `你好，欢迎。`. This is not a listening/ASR quality claim.
+LLM prefill/cached decoding passed four lengths with 28 numerical comparisons
+and matching top-1 against a real-weight Transformers Qwen2 eager reference
+(Transformers 5.14.1 in the observed environment).
+
+HiFT gates are separate from Flow: F0 `atol=.01 Hz, rtol=1e-5`; source and
+waveform `atol=1e-3, rtol=1e-4`. These are development numerical checks, not
+calibrated perceptual-quality criteria. In the first short-reduction build,
+same-source decoding passed all tested cases, but full-waveform comparisons
+failed on the 256-frame synthetic case and 128/256-frame real-Mel cases.
+F0 error improved substantially (64-frame stress: .02224 -> .000755 Hz),
+while same-F0 isolation also exposed phase accumulation/scaling rounding.
+The failures and original gates are retained. Do not drop cases or widen
+thresholds to declare this implementation qualified.
+
+Final clean component rebuild (LLM 02 / HiFT 03) retained the LLM pass (4/4,
+28 comparisons; maximum logit error 1.593e-4), but full HiFT waveform parity
+was 4/8: synthetic 256 and acoustic 64/128/256 failed. All eight same-source
+decoder comparisons and F0 checks passed. The acoustic-64 regression relative
+to HiFT 02 is retained, not replaced by the older plan's better pass count.
+Reports: `/home/erlic/models/cosyvoice3-speech-final-01/` on the tested WSL host.
+Dependency-light regression: WSL 93 passed / 35 skipped; Windows 71 passed /
+46 skipped. The small native LLM/cache/source tests passed 5/5. These counts
+do not include or erase the failing full-weight checks.
+
+The remaining sections preserve the earlier Flow validation history.
 
 ## Validation status (2026-09-07; baseline before acoustic integration)
 
