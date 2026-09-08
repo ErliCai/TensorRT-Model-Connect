@@ -3,7 +3,52 @@
 This directory starts the implementation of
 `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`. **It does not yet add end-to-end
 CosyVoice3 support to `trtmc build` / `trtmc infer`.** There is intentionally
-no exported `plugin`, runtime strategy, or E2E manifest claiming otherwise.
+no exported Python build `plugin` or model-quality E2E manifest claiming otherwise.
+An experimental native C++ strategy `text_to_audio_cosyvoice3` is available via
+the explicit `package` command below; this is not a model-quality qualification.
+
+## Experimental native C++ path
+
+Prepare `voice.npz` with the existing `prepare-voice` command, then package
+the four already-built FP32 component directories (no engine rebuild):
+
+```bash
+python -m tensorrt_model_connect.families.cosyvoice3 package \
+  --model-dir "$MODEL" --llm "$LLM" --conditioner "$CONDITIONER" \
+  --flow "$FLOW" --hift "$HIFT" --voice "$VOICE" --output cosyvoice3.bundle
+./build/trtmc generate-audio cosyvoice3.bundle \
+  --prompt "Hello world." --max-new-tokens 60 -o hello.wav
+```
+
+Use `--prompt-text` at packaging time only with the exact reference transcript
+for zero-shot mode. Otherwise the voice conditions the acoustic stages, without
+inserting reference speech tokens in the LLM prompt. One bundle contains one
+fixed prepared voice. The C++ pipeline supports plain text, batch 1, offline
+generation and 24 kHz mono audio. Raw reference WAV preparation, normalization,
+streaming and the generic `trtmc build` integration are not implemented in C++.
+
+All learned inference uses TensorRT. Stage engines are loaded and released
+sequentially; this development implementation prioritizes fitting an 8 GB GPU
+over throughput. Plan checksums are verified on each load. Specify a generation
+limit fitting the bundle's voice-dependent profiles; oversized requests and
+generation ending without a stop token fail instead of silently truncating.
+
+Sampling uses family-owned RAS (top-p=.8, top-k=25, last-10 repetition redraw),
+or `package --greedy`. Generic text-generation top-k/top-p options are not
+CosyVoice3 sampling controls. Native `std::mt19937_64` randomness is not
+NumPy/PyTorch seed-equivalent; equal seeds across implementations do not imply
+equal tokens, noise or waveforms. The C++ API uses seed 2512 when seed is unset.
+
+Native source: `src/runtime/models/cosyvoice3/{pipeline.h,pipeline.cpp,plugin.cpp}`.
+CPU contracts: `tests/cpp/models/cosyvoice3/test_cosyvoice3_runtime.cpp`.
+Build with CMake, then run `ctest --test-dir build -R '^test_cosyvoice3_runtime$'`.
+Optional native BPE comparison: set `COSYVOICE3_CPP_TEST` to that test executable
+and `COSYVOICE3_MODEL_DIR` to the checkpoint, then run
+`pytest python/tensorrt_model_connect/families/cosyvoice3/tests/test_bundle.py`.
+
+Successful native audio generation is **not** reference parity or audio-quality
+qualification. Existing HiFT full-waveform numerical failures remain independent
+of this integration; no tolerances or reference workloads were relaxed.
 
 ## Directory layout
 
@@ -11,6 +56,7 @@ no exported `plugin`, runtime strategy, or E2E manifest claiming otherwise.
 cosyvoice3/
   __main__.py          # inspect / build-* / prepare-voice / synthesize CLI
   tts.py               # reference audio preparation and offline TTS composition
+  bundle.py            # package existing plans + one prepared voice for C++
   frontend.py          # native CAMPPlus and speech tokenizer graphs/runtimes
   llm.py, hift.py      # native LLM and vocoder graphs/runtimes
   flow.py              # Euler solver and offline token-to-Mel composition

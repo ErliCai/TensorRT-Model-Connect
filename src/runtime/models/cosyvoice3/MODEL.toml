@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+id = "cosyvoice3"
+runtime_library = "libtrtmc_model_cosyvoice3.so"
+runtime_plugins = ["plugin.cpp|register_cosyvoice3_plugin"]
+runtime_strategies = ["text_to_audio_cosyvoice3"]
+runtime_tests = ["test_cosyvoice3_runtime|test_cosyvoice3_runtime.cpp|trtmc_model_cosyvoice3,nlohmann_json::nlohmann_json|_|_"]
