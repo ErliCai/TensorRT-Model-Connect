@@ -4,13 +4,12 @@
 """Dependency-light tests for pinned-source reference selection."""
 
 import subprocess
-import sys
 
 import pytest
 import numpy as np
 
 from families.cosyvoice3.config import SOURCE_REVISION
-from families.cosyvoice3.validation.validate_flow_pytorch import (
+from families.cosyvoice3.tests.reference_helpers import (
     _ieee_fp32_reference,
     _official_dit,
     _cases,
@@ -19,7 +18,7 @@ from families.cosyvoice3.validation.validate_flow_pytorch import (
     INTEGRATED_RTOL,
     RTOL,
 )
-from families.cosyvoice3.validation.parity_metrics import compare_outputs
+from families.cosyvoice3.tests.reference_helpers import compare_outputs
 
 
 def test_rejects_wrong_source_revision(tmp_path, monkeypatch):
@@ -28,14 +27,6 @@ def test_rejects_wrong_source_revision(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(ValueError, match=SOURCE_REVISION):
         _official_dit(tmp_path)
-
-
-def test_validator_help_is_dependency_light():
-    result = subprocess.run(
-        [sys.executable, "-m", "families.cosyvoice3.validation.validate_flow_pytorch", "--help"],
-        check=True, capture_output=True, text=True,
-    )
-    assert "pinned official CosyVoice PyTorch DiT" in result.stdout
 
 
 @pytest.mark.parametrize("status", [" M cosyvoice/flow/DiT/dit.py", "?? cosyvoice/flow/new.py"])
@@ -49,7 +40,7 @@ def test_rejects_modified_pinned_source(tmp_path, monkeypatch, status):
 
 
 def test_stress_suite_and_calibrated_thresholds_are_pinned():
-    # Calibrated against the FP64 oracle on 2026-09-08; see validate_flow_pytorch.
+    # Calibrated against the FP64 oracle on 2026-09-08; see reference_helpers.
     assert ATOL == RTOL == 2e-2
     assert INTEGRATED_ATOL == INTEGRATED_RTOL == 1e-1
     cases = _cases()
@@ -83,16 +74,8 @@ def test_parity_reports_elementwise_failures_without_weakening_gate():
     assert result["passed"] == bool(np.allclose(actual, expected, atol=ATOL, rtol=RTOL))
 
 
-def test_trajectory_validator_help_is_dependency_light():
-    result = subprocess.run(
-        [sys.executable, "-m", "families.cosyvoice3.validation.validate_flow_trajectory", "--help"],
-        check=True, capture_output=True, text=True,
-    )
-    assert "unmodified official solver" in result.stdout
-
-
 def test_supplemental_conditions_are_reproducible_and_labelled_separately():
-    from families.cosyvoice3.validation.validate_flow_trajectory import _cfg_cases
+    from families.cosyvoice3.tests.reference_helpers import _cfg_cases
     cases = list(_cfg_cases())
     assert len(cases) == 8
     for (frames, masked, values), (_, _, repeated) in zip(cases, _cfg_cases()):

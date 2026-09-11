@@ -14,7 +14,7 @@ import pytest
 from families.cosyvoice3.conditioning import TokenProfile, validate_weights, weight_shapes
 from families.cosyvoice3.config import ShapeProfile
 from families.cosyvoice3.flow import OfflineFlow
-from families.cosyvoice3.validation.validate_offline_flow import acoustic_cases
+from families.cosyvoice3.tests.reference_helpers import acoustic_cases
 
 
 @pytest.mark.parametrize("values", [(0, 32, 128), (2, 1, 128), (2, 32, 7501), (True, 32, 128), (2, 3.0, 128)])
@@ -117,8 +117,8 @@ def native_conditioner(tmp_path_factory):
         pytest.skip("Set COSYVOICE3_RUN_GPU_TESTS=1 and COSYVOICE3_OFFICIAL_SOURCE")
     import torch
     from families.cosyvoice3.conditioning import build_engine, ConditioningEngine
-    from families.cosyvoice3.validation.validate_flow_pytorch import _official_dit
-    from families.cosyvoice3.validation.validate_flow_trajectory import _official_solver
+    from families.cosyvoice3.tests.reference_helpers import _official_dit
+    from families.cosyvoice3.tests.reference_helpers import _official_solver
 
     source = Path(os.environ["COSYVOICE3_OFFICIAL_SOURCE"])
     _official_dit(source)

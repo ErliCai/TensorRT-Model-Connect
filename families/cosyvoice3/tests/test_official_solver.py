@@ -18,8 +18,8 @@ pytestmark = pytest.mark.skipif(not source, reason="Set COSYVOICE3_OFFICIAL_SOUR
 def test_against_unmodified_official_solver(steps, guidance):
     import torch
     from families.cosyvoice3.flow import solve_euler
-    from families.cosyvoice3.validation.validate_flow_pytorch import _official_dit
-    from families.cosyvoice3.validation.validate_flow_trajectory import _official_solver
+    from families.cosyvoice3.tests.reference_helpers import _official_dit
+    from families.cosyvoice3.tests.reference_helpers import _official_solver
 
     _official_dit(Path(source))
     ConditionalCFM, _ = _official_solver(Path(source))

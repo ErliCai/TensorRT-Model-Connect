@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in tiny-network TensorRT tests; full checkpoint proof uses validate_flow.
+"""Opt-in tiny-network TensorRT correctness tests.
 
 Run with COSYVOICE3_RUN_GPU_TESTS=1 in a CUDA + TensorRT + PyTorch environment.
 """

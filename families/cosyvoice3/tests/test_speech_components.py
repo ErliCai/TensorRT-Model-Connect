@@ -175,7 +175,7 @@ def tiny_llm(tmp_path_factory):
 def test_tiny_llm_dynamic_cache_and_profile_boundaries(tiny_llm, length):
     import torch
     import torch.nn.functional as F
-    from families.cosyvoice3.validation.validate_flow_pytorch import _ieee_fp32_reference
+    from families.cosyvoice3.tests.reference_helpers import _ieee_fp32_reference
 
     engine, ref, decoder, _ = tiny_llm
     ids = torch.arange(length, device="cuda", dtype=torch.int32)[None]
@@ -239,7 +239,7 @@ def full_llm():
 def test_full_llm_prefill_cached_decode_and_reference(full_llm, length):
     import torch
     import torch.nn.functional as F
-    from families.cosyvoice3.validation.validate_flow_pytorch import _ieee_fp32_reference
+    from families.cosyvoice3.tests.reference_helpers import _ieee_fp32_reference
 
     engine, ref, embedding, decoder = full_llm
     ids = torch.tensor([[158497, 100, 151646, 158499] + [151936 + (i * 71) % 6561 for i in range(length - 4)]],
