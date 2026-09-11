@@ -39,7 +39,7 @@ ITask* create(const FamilyContext& context) {
 
     const auto config = nlohmann::json::parse(require_text(context.reader, "config.json"));
     const int schema = config.at("cosyvoice3_schema");
-    if ((schema != 1 && schema != 2) || config.at("precision") != "fp32")
+    if (schema != 2 || config.at("precision") != "fp32")
         throw std::runtime_error("Unsupported CosyVoice3 bundle");
 
     const auto& family = config.at("cosyvoice3");
@@ -49,16 +49,8 @@ ITask* create(const FamilyContext& context) {
     settings.max_context = family.at("max_context");
     settings.max_tokens = family.at("max_tokens");
     settings.greedy = family.at("greedy");
-    Voice voice;
-    nlohmann::json coefficients;
-    if (schema == 1) {
-        voice = {family.at("prompt_tokens").get<std::vector<int32_t>>(),
-                 family.at("prompt_features").get<std::vector<float>>(),
-                 family.at("speaker").get<std::vector<float>>()};
-    } else {
-        settings.total_tokens = family.at("total_tokens");
-        coefficients = nlohmann::json::parse(require_text(context.reader, "frontend.json"));
-    }
+    settings.total_tokens = family.at("total_tokens");
+    auto coefficients = nlohmann::json::parse(require_text(context.reader, "frontend.json"));
 
     const auto tokenizer_bytes = require_section(context.reader, "tokenizer.json");
     auto tokenizer = CreateBpeTokenizer(tokenizer_bytes.data(), tokenizer_bytes.size(), false);
@@ -72,8 +64,8 @@ ITask* create(const FamilyContext& context) {
             throw std::runtime_error("Cannot load CosyVoice3 " + name);
         return module;
     };
-    return new Pipeline(std::move(settings), std::move(voice), std::move(tokenizer),
-                        std::move(factory), std::move(coefficients));
+    return new Pipeline(std::move(settings), std::move(tokenizer), std::move(factory),
+                        std::move(coefficients));
 }
 
 } // namespace trtmc::cosyvoice3

@@ -131,39 +131,23 @@ std::vector<int32_t> pack(const ITokenizer& tokenizer, const Settings& settings,
     return ids;
 }
 
-Pipeline::Pipeline(Settings settings, Voice voice, std::unique_ptr<ITokenizer> tokenizer,
-                   ModuleFactory factory, nlohmann::json coefficients)
-    : settings_(std::move(settings)), voice_(std::move(voice)), tokenizer_(std::move(tokenizer)),
+Pipeline::Pipeline(Settings settings, std::unique_ptr<ITokenizer> tokenizer, ModuleFactory factory,
+                   nlohmann::json coefficients)
+    : settings_(std::move(settings)), tokenizer_(std::move(tokenizer)),
       factory_(std::move(factory)), coefficients_(std::move(coefficients)) {
     require(tokenizer_ && factory_, "missing tokenizer or module factory");
     require(settings_.max_context > 0 && settings_.max_tokens > 0, "invalid capacity");
-    if (!coefficients_.empty()) {
-        require(settings_.total_tokens > 0, "invalid combined speech capacity");
-        return;
-    }
-    require(voice_.features.size() == voice_.tokens.size() * 160 && voice_.speaker.size() == 192,
-            "invalid prepared voice shape");
-    for (int id : voice_.tokens)
-        require(id >= 0 && id < 6561, "invalid reference speech token");
-    for (float x : voice_.features)
-        require(std::isfinite(x), "nonfinite reference mel");
-    double norm = 0;
-    for (float x : voice_.speaker) {
-        require(std::isfinite(x), "nonfinite speaker");
-        norm += double(x) * x;
-    }
-    require(norm > 0, "zero speaker embedding");
+    require(!coefficients_.empty(), "missing reference frontend coefficients");
+    require(settings_.total_tokens > 0, "invalid combined speech capacity");
 }
 
-AudioResult Pipeline::generate_audio(const std::string& text, const AudioGenerationConfig& cfg) {
-    require(!voice_.tokens.empty(), "this bundle requires reference audio for each request");
-    return synthesize(text, cfg, settings_, voice_);
+AudioResult Pipeline::generate_audio(const std::string&, const AudioGenerationConfig&) {
+    throw std::runtime_error("CosyVoice3: this bundle requires reference audio for each request");
 }
 
 AudioResult Pipeline::generate_audio_with_reference(const std::string& text,
                                                     const AudioReference& reference,
                                                     const AudioGenerationConfig& cfg) {
-    require(!coefficients_.empty(), "legacy fixed-voice bundle has no reference frontend; rebuild");
     plain(text);
     plain(reference.transcript, true);
     require(cfg.max_new_tokens > 0, "max_new_tokens must be positive");

@@ -133,3 +133,19 @@ def test_cosyvoice3_build_to_reference_audio(request, tmp_path):
     result = subprocess.run(missing, capture_output=True, text=True, timeout=60)
     assert result.returncode != 0
     assert not (tmp_path / "missing-reference.wav").exists()
+
+    # Obsolete fixed-voice bundles fail at load, before any engine is created.
+    from tensorrt_model_connect.bundle_writer import BundleWriter
+
+    obsolete = tmp_path / "obsolete.bundle"
+    writer = BundleWriter(obsolete)
+    writer.set_header(family=FAMILY, task="audio_generation", backend="trt")
+    writer.add_json("config.json", {"cosyvoice3_schema": 1, "precision": "fp32"})
+    writer.finish()
+    rejected = command.copy()
+    rejected[2] = str(obsolete)
+    rejected[-1] = str(tmp_path / "obsolete.wav")
+    result = subprocess.run(rejected, capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert "Unsupported CosyVoice3 bundle" in result.stdout + result.stderr
+    assert not (tmp_path / "obsolete.wav").exists()

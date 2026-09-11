@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Individual component commands and legacy fixed-voice packaging tools."""
+"""Individual component commands for CosyVoice3 development."""
 
 from __future__ import annotations
 
@@ -84,18 +84,8 @@ def main(argv=None):
     tts.add_argument("--max-tokens", type=int, default=100)
     tts.add_argument("--seed", type=int, default=2512)
     tts.add_argument("--greedy", action="store_true", help="Deterministic argmax, not the official default RAS sampler")
-    bundle = commands.add_parser("package", help="Package existing components + prepared voice for experimental native C++ TTS")
-    for name in ("model-dir", "llm", "conditioner", "flow", "hift", "voice", "output"):
-        bundle.add_argument(f"--{name}", type=Path, required=True)
-    bundle.add_argument("--instruction", default="You are a helpful assistant.")
-    bundle.add_argument("--prompt-text", default="")
-    bundle.add_argument("--greedy", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "package":
-        from .bundle import package
-
-        package(args)
-    elif args.command == "inspect":
+    if args.command == "inspect":
         print(json.dumps({"target": MODEL_ID, "flow": asdict(read_config(args.model_dir)), "status": "component_only"}, indent=2))
     elif args.command == "build-flow":
         build(args)

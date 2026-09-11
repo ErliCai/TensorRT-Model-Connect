@@ -15,7 +15,7 @@
 
 namespace trtmc::cosyvoice3 {
 
-// Fixed prepared voice; reference WAV feature extraction is a separate build step.
+// Request-local features extracted from reference audio.
 struct Voice {
     std::vector<int32_t> tokens;
     std::vector<float> features; // [2 * tokens, 80]
@@ -24,7 +24,7 @@ struct Voice {
 struct Settings {
     std::string instruction{"You are a helpful assistant."}, transcript;
     int max_context{512}, max_tokens{100};
-    int total_tokens{0}; // zero for legacy bundles with a fixed voice
+    int total_tokens{512};
     bool greedy{false};
 };
 using ModuleFactory = std::function<std::unique_ptr<ITrtModule>(const std::string&)>;
@@ -36,8 +36,8 @@ std::vector<int32_t> pack(const ITokenizer&, const Settings&, const Voice&, cons
 
 class Pipeline final : public IAudioGeneration, public IReferenceAudioGeneration {
   public:
-    Pipeline(Settings settings, Voice voice, std::unique_ptr<ITokenizer> tokenizer,
-             ModuleFactory factory, nlohmann::json coefficients = {});
+    Pipeline(Settings settings, std::unique_ptr<ITokenizer> tokenizer, ModuleFactory factory,
+             nlohmann::json coefficients);
     AudioResult generate_audio(const std::string&, const AudioGenerationConfig& = {}) override;
     AudioResult generate_audio_with_reference(const std::string&, const AudioReference&,
                                               const AudioGenerationConfig& = {}) override;
@@ -46,7 +46,6 @@ class Pipeline final : public IAudioGeneration, public IReferenceAudioGeneration
     AudioResult synthesize(const std::string&, const AudioGenerationConfig&, const Settings&,
                            Voice);
     Settings settings_;
-    Voice voice_;
     std::unique_ptr<ITokenizer> tokenizer_;
     ModuleFactory factory_;
     nlohmann::json coefficients_;

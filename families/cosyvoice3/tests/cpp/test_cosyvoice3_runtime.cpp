@@ -45,10 +45,13 @@ class Tokenizer final : public ITokenizer {
 struct Trace {
     int live{0}, peak{0}, llm{0}, flow{0};
     std::vector<float> noise;
+    bool zero_speaker{false};
+    int frontend{0};
 };
 class FakeModule final : public ITrtModule {
     std::string stage_;
     Trace& trace_;
+    std::vector<int32_t> tokens_;
     std::unordered_map<std::string, std::vector<float>> storage_;
     std::unordered_map<std::string, std::vector<int64_t>> shapes_;
 
@@ -56,6 +59,10 @@ class FakeModule final : public ITrtModule {
     FakeModule(std::string stage, Trace& trace) : stage_(std::move(stage)), trace_(trace) {
         ++trace_.live;
         trace_.peak = std::max(trace_.peak, trace_.live);
+        if (stage_ == "campplus")
+            shapes_ = {{"features", {1, 3000, 80}}};
+        if (stage_ == "speech_tokenizer")
+            shapes_ = {{"features", {1, 128, 3000}}};
         if (stage_ == "llm")
             shapes_ = {{"ids", {1, 512}},
                        {"positions", {512}},
@@ -82,7 +89,15 @@ class FakeModule final : public ITrtModule {
             data.assign(count, value);
             result[name] = {data.data(), shape, DType::kFloat32};
         };
-        if (stage_ == "llm") {
+        if (stage_ == "campplus") {
+            ++trace_.frontend;
+            out("speaker", {1, 192}, trace_.zero_speaker ? 0.f : 1.f);
+        } else if (stage_ == "speech_tokenizer") {
+            ++trace_.frontend;
+            int count = (in.at("features").shape[2] + 3) / 4;
+            tokens_.assign(count, 8);
+            result["tokens"] = {tokens_.data(), {1, count}, DType::kInt32};
+        } else if (stage_ == "llm") {
             int step = trace_.llm++ % 3;
             int past = in.at("keys").shape[2], n = in.at("ids").shape[1], total = past + n;
             check(step ? past > 0 : past == 0, "request-local compact cache");
@@ -95,31 +110,31 @@ class FakeModule final : public ITrtModule {
             out("present_keys", {24, 2, total, 64}, float(step));
             out("present_values", {24, 2, total, 64}, float(step));
         } else if (stage_ == "conditioning") {
-            check(in.at("tokens").shape[1] == 3, "prompt and generated tokens concatenated");
-            out("mu", {1, 80, 6}, 2);
+            check(in.at("tokens").shape[1] == 4, "prompt and generated tokens concatenated");
+            out("mu", {1, 80, 8}, 2);
             out("spks", {1, 80}, 3);
         } else if (stage_ == "flow") {
             int step = trace_.flow++ % 10;
             auto x = static_cast<float*>(in.at("x").data);
             if (!step)
-                trace_.noise.assign(x, x + 480);
-            for (int i = 0; i < 480; ++i) {
-                check(x[i] == x[480 + i], "CFG rows share state");
-                check(static_cast<float*>(in.at("mu").data)[480 + i] == 0, "unconditional mu zero");
-                check(static_cast<float*>(in.at("cond").data)[480 + i] == 0,
+                trace_.noise.assign(x, x + 640);
+            for (int i = 0; i < 640; ++i) {
+                check(x[i] == x[640 + i], "CFG rows share state");
+                check(static_cast<float*>(in.at("mu").data)[640 + i] == 0, "unconditional mu zero");
+                check(static_cast<float*>(in.at("cond").data)[640 + i] == 0,
                       "unconditional prompt zero");
             }
             auto mask = static_cast<float*>(in.at("mask").data);
-            check(std::all_of(mask, mask + 12, [](float v) { return v == 1; }),
+            check(std::all_of(mask, mask + 16, [](float v) { return v == 1; }),
                   "both CFG masks retained");
-            out("velocity", {2, 80, 6}, 0);
-            std::fill_n(storage_["velocity"].begin(), 480, 1.f);
+            out("velocity", {2, 80, 8}, 0);
+            std::fill_n(storage_["velocity"].begin(), 640, 1.f);
         } else {
             check(in.at("mel").shape == std::vector<int64_t>({1, 80, 4}), "prompt frames removed");
             auto mel = static_cast<float*>(in.at("mel").data);
             for (int c = 0; c < 80; ++c)
                 for (int f = 0; f < 4; ++f)
-                    check(std::abs(mel[c * 4 + f] - (trace_.noise[c * 6 + 2 + f] + 1.7f)) < 2e-6,
+                    check(std::abs(mel[c * 4 + f] - (trace_.noise[c * 8 + 4 + f] + 1.7f)) < 2e-6,
                           "ten-step guided Euler analytical oracle");
             auto noise = static_cast<float*>(in.at("noise").data);
             check(std::all_of(noise, noise + in.at("noise").numel(),
@@ -243,25 +258,43 @@ int main(int argc, char** argv) {
     rejects([&] { pack(tokenizer, settings, voice, "<tag>"); }, "control tags rejected");
     rejects([&] { pack(tokenizer, settings, voice, "  "); }, "empty text rejected");
     Trace trace;
-    Pipeline pipeline(settings, voice, std::make_unique<Tokenizer>(), [&](const std::string& name) {
-        return std::make_unique<FakeModule>(name, trace);
-    });
+    // Synthetic DSP coefficients isolate orchestration; numerical frontend parity
+    // is checked separately against the Python reference at four sample rates.
+    nlohmann::json coefficients{{"schema", 1}};
+    for (const auto& [name, size] :
+         std::vector<std::pair<std::string, int>>{{"kaldi_window", 400},
+                                                  {"whisper_window", 400},
+                                                  {"acoustic_window", 1920},
+                                                  {"kaldi_bank", 80 * 257},
+                                                  {"whisper_bank", 128 * 201},
+                                                  {"acoustic_bank", 80 * 961}})
+        coefficients[name] = std::vector<float>(size, 1.f);
+    AudioReference reference;
+    reference.sample_rate = 16000;
+    reference.samples.assign(1600, .1f);
+    reference.transcript = "Reference";
+    Pipeline pipeline(
+        settings, std::make_unique<Tokenizer>(),
+        [&](const std::string& name) { return std::make_unique<FakeModule>(name, trace); },
+        coefficients);
     AudioGenerationConfig cfg;
     cfg.max_new_tokens = 5;
-    auto audio = pipeline.generate_audio("Hello", cfg);
+    auto audio = pipeline.generate_audio_with_reference("Hello", reference, cfg);
     check(audio.sample_rate == 24000 && audio.num_samples == 1920, "audio output contract");
-    auto second = pipeline.generate_audio("Hello", cfg);
-    check(audio.samples == second.samples && trace.llm == 6 && trace.flow == 20,
+    auto second = pipeline.generate_audio_with_reference("Hello", reference, cfg);
+    check(audio.samples == second.samples && trace.llm == 6 && trace.flow == 20 &&
+              trace.frontend == 4,
           "repeat requests reset state");
     check(trace.peak == 1 && trace.live == 0, "only one stage engine alive, all released");
     cfg.max_new_tokens = 1;
-    rejects([&] { pipeline.generate_audio("Hello", cfg); }, "truncated generation rejected");
+    rejects([&] { pipeline.generate_audio_with_reference("Hello", reference, cfg); },
+            "truncated generation rejected");
     check(trace.live == 0, "engine released after exception");
     Settings reference_settings;
     reference_settings.total_tokens = 128;
     bool unexpected_frontend_load = false;
     Pipeline reference_pipeline(
-        reference_settings, {}, std::make_unique<Tokenizer>(),
+        reference_settings, std::make_unique<Tokenizer>(),
         [&](const std::string&) -> std::unique_ptr<ITrtModule> {
             unexpected_frontend_load = true;
             throw std::runtime_error("invalid reference must fail before loading engines");
@@ -282,14 +315,13 @@ int main(int argc, char** argv) {
     check(!unexpected_frontend_load, "invalid references fail before engine loading");
     cfg.max_new_tokens = 5;
     cfg.talker_max_new_tokens = 1;
-    rejects([&] { pipeline.generate_audio("Hello", cfg); }, "unsupported talker option rejected");
-    voice.speaker.assign(192, 0);
-    rejects(
-        [&] {
-            Pipeline p(settings, voice, std::make_unique<Tokenizer>(),
-                       [](const std::string&) -> std::unique_ptr<ITrtModule> { return {}; });
-        },
-        "placeholder voice rejected");
+    rejects([&] { pipeline.generate_audio_with_reference("Hello", reference, cfg); },
+            "unsupported talker option rejected");
+    cfg.talker_max_new_tokens = 0;
+    trace.zero_speaker = true;
+    rejects([&] { pipeline.generate_audio_with_reference("Hello", reference, cfg); },
+            "placeholder speaker output rejected");
+    check(trace.live == 0, "frontend engine released after invalid speaker");
     std::cout << "CosyVoice3 runtime checks: " << failures << " failures\n";
     return failures ? 1 : 0;
 }
